@@ -1,0 +1,230 @@
+====================================================================================================
+Layer (type:depth-idx)                             Output Shape              Param #
+====================================================================================================
+MViT                                               [12, 2]                   --
+├─Conv3d: 1-1                                      [12, 96, 8, 56, 56]       42,432
+├─PositionalEncoding: 1-2                          [12, 25089, 96]           96
+├─ModuleList: 1-3                                  --                        --
+│    └─MultiscaleBlock: 2-1                        [12, 25089, 96]           --
+│    │    └─LayerNorm: 3-1                         [12, 25089, 96]           192
+│    │    └─MultiscaleAttention: 3-2               [12, 25089, 96]           68,352
+│    │    └─StochasticDepth: 3-3                   [12, 25089, 96]           --
+│    │    └─LayerNorm: 3-4                         [12, 25089, 96]           192
+│    │    └─MLP: 3-5                               [12, 25089, 96]           74,208
+│    │    └─StochasticDepth: 3-6                   [12, 25089, 96]           --
+│    └─MultiscaleBlock: 2-2                        [12, 6273, 192]           --
+│    │    └─LayerNorm: 3-7                         [12, 25089, 96]           192
+│    │    └─MultiscaleAttention: 3-8               [12, 6273, 192]           113,280
+│    │    └─Linear: 3-9                            [12, 25089, 192]          18,624
+│    │    └─Pool: 3-10                             [12, 6273, 192]           --
+│    │    └─StochasticDepth: 3-11                  [12, 6273, 192]           --
+│    │    └─LayerNorm: 3-12                        [12, 6273, 192]           384
+│    │    └─MLP: 3-13                              [12, 6273, 192]           295,872
+│    │    └─StochasticDepth: 3-14                  [12, 6273, 192]           --
+│    └─MultiscaleBlock: 2-3                        [12, 6273, 192]           --
+│    │    └─LayerNorm: 3-15                        [12, 6273, 192]           384
+│    │    └─MultiscaleAttention: 3-16              [12, 6273, 192]           168,576
+│    │    └─StochasticDepth: 3-17                  [12, 6273, 192]           --
+│    │    └─LayerNorm: 3-18                        [12, 6273, 192]           384
+│    │    └─MLP: 3-19                              [12, 6273, 192]           295,872
+│    │    └─StochasticDepth: 3-20                  [12, 6273, 192]           --
+│    └─MultiscaleBlock: 2-4                        [12, 1569, 384]           --
+│    │    └─LayerNorm: 3-21                        [12, 6273, 192]           384
+│    │    └─MultiscaleAttention: 3-22              [12, 1569, 384]           385,152
+│    │    └─Linear: 3-23                           [12, 6273, 384]           74,112
+│    │    └─Pool: 3-24                             [12, 1569, 384]           --
+│    │    └─StochasticDepth: 3-25                  [12, 1569, 384]           --
+│    │    └─LayerNorm: 3-26                        [12, 1569, 384]           768
+│    │    └─MLP: 3-27                              [12, 1569, 384]           1,181,568
+│    │    └─StochasticDepth: 3-28                  [12, 1569, 384]           --
+│    └─MultiscaleBlock: 2-5                        [12, 1569, 384]           --
+│    │    └─LayerNorm: 3-29                        [12, 1569, 384]           768
+│    │    └─MultiscaleAttention: 3-30              [12, 1569, 384]           606,336
+│    │    └─StochasticDepth: 3-31                  [12, 1569, 384]           --
+│    │    └─LayerNorm: 3-32                        [12, 1569, 384]           768
+│    │    └─MLP: 3-33                              [12, 1569, 384]           1,181,568
+│    │    └─StochasticDepth: 3-34                  [12, 1569, 384]           --
+│    └─MultiscaleBlock: 2-6                        [12, 1569, 384]           --
+│    │    └─LayerNorm: 3-35                        [12, 1569, 384]           768
+│    │    └─MultiscaleAttention: 3-36              [12, 1569, 384]           606,336
+│    │    └─StochasticDepth: 3-37                  [12, 1569, 384]           --
+│    │    └─LayerNorm: 3-38                        [12, 1569, 384]           768
+│    │    └─MLP: 3-39                              [12, 1569, 384]           1,181,568
+│    │    └─StochasticDepth: 3-40                  [12, 1569, 384]           --
+│    └─MultiscaleBlock: 2-7                        [12, 1569, 384]           --
+│    │    └─LayerNorm: 3-41                        [12, 1569, 384]           768
+│    │    └─MultiscaleAttention: 3-42              [12, 1569, 384]           606,336
+│    │    └─StochasticDepth: 3-43                  [12, 1569, 384]           --
+│    │    └─LayerNorm: 3-44                        [12, 1569, 384]           768
+│    │    └─MLP: 3-45                              [12, 1569, 384]           1,181,568
+│    │    └─StochasticDepth: 3-46                  [12, 1569, 384]           --
+│    └─MultiscaleBlock: 2-8                        [12, 1569, 384]           --
+│    │    └─LayerNorm: 3-47                        [12, 1569, 384]           768
+│    │    └─MultiscaleAttention: 3-48              [12, 1569, 384]           606,336
+│    │    └─StochasticDepth: 3-49                  [12, 1569, 384]           --
+│    │    └─LayerNorm: 3-50                        [12, 1569, 384]           768
+│    │    └─MLP: 3-51                              [12, 1569, 384]           1,181,568
+│    │    └─StochasticDepth: 3-52                  [12, 1569, 384]           --
+│    └─MultiscaleBlock: 2-9                        [12, 1569, 384]           --
+│    │    └─LayerNorm: 3-53                        [12, 1569, 384]           768
+│    │    └─MultiscaleAttention: 3-54              [12, 1569, 384]           606,336
+│    │    └─StochasticDepth: 3-55                  [12, 1569, 384]           --
+│    │    └─LayerNorm: 3-56                        [12, 1569, 384]           768
+│    │    └─MLP: 3-57                              [12, 1569, 384]           1,181,568
+│    │    └─StochasticDepth: 3-58                  [12, 1569, 384]           --
+│    └─MultiscaleBlock: 2-10                       [12, 1569, 384]           --
+│    │    └─LayerNorm: 3-59                        [12, 1569, 384]           768
+│    │    └─MultiscaleAttention: 3-60              [12, 1569, 384]           606,336
+│    │    └─StochasticDepth: 3-61                  [12, 1569, 384]           --
+│    │    └─LayerNorm: 3-62                        [12, 1569, 384]           768
+│    │    └─MLP: 3-63                              [12, 1569, 384]           1,181,568
+│    │    └─StochasticDepth: 3-64                  [12, 1569, 384]           --
+│    └─MultiscaleBlock: 2-11                       [12, 1569, 384]           --
+│    │    └─LayerNorm: 3-65                        [12, 1569, 384]           768
+│    │    └─MultiscaleAttention: 3-66              [12, 1569, 384]           606,336
+│    │    └─StochasticDepth: 3-67                  [12, 1569, 384]           --
+│    │    └─LayerNorm: 3-68                        [12, 1569, 384]           768
+│    │    └─MLP: 3-69                              [12, 1569, 384]           1,181,568
+│    │    └─StochasticDepth: 3-70                  [12, 1569, 384]           --
+│    └─MultiscaleBlock: 2-12                       [12, 1569, 384]           --
+│    │    └─LayerNorm: 3-71                        [12, 1569, 384]           768
+│    │    └─MultiscaleAttention: 3-72              [12, 1569, 384]           606,336
+│    │    └─StochasticDepth: 3-73                  [12, 1569, 384]           --
+│    │    └─LayerNorm: 3-74                        [12, 1569, 384]           768
+│    │    └─MLP: 3-75                              [12, 1569, 384]           1,181,568
+│    │    └─StochasticDepth: 3-76                  [12, 1569, 384]           --
+│    └─MultiscaleBlock: 2-13                       [12, 1569, 384]           --
+│    │    └─LayerNorm: 3-77                        [12, 1569, 384]           768
+│    │    └─MultiscaleAttention: 3-78              [12, 1569, 384]           606,336
+│    │    └─StochasticDepth: 3-79                  [12, 1569, 384]           --
+│    │    └─LayerNorm: 3-80                        [12, 1569, 384]           768
+│    │    └─MLP: 3-81                              [12, 1569, 384]           1,181,568
+│    │    └─StochasticDepth: 3-82                  [12, 1569, 384]           --
+│    └─MultiscaleBlock: 2-14                       [12, 1569, 384]           --
+│    │    └─LayerNorm: 3-83                        [12, 1569, 384]           768
+│    │    └─MultiscaleAttention: 3-84              [12, 1569, 384]           606,336
+│    │    └─StochasticDepth: 3-85                  [12, 1569, 384]           --
+│    │    └─LayerNorm: 3-86                        [12, 1569, 384]           768
+│    │    └─MLP: 3-87                              [12, 1569, 384]           1,181,568
+│    │    └─StochasticDepth: 3-88                  [12, 1569, 384]           --
+│    └─MultiscaleBlock: 2-15                       [12, 393, 768]            --
+│    │    └─LayerNorm: 3-89                        [12, 1569, 384]           768
+│    │    └─MultiscaleAttention: 3-90              [12, 393, 768]            1,492,608
+│    │    └─Linear: 3-91                           [12, 1569, 768]           295,680
+│    │    └─Pool: 3-92                             [12, 393, 768]            --
+│    │    └─StochasticDepth: 3-93                  [12, 393, 768]            --
+│    │    └─LayerNorm: 3-94                        [12, 393, 768]            1,536
+│    │    └─MLP: 3-95                              [12, 393, 768]            4,722,432
+│    │    └─StochasticDepth: 3-96                  [12, 393, 768]            --
+│    └─MultiscaleBlock: 2-16                       [12, 393, 768]            --
+│    │    └─LayerNorm: 3-97                        [12, 393, 768]            1,536
+│    │    └─MultiscaleAttention: 3-98              [12, 393, 768]            2,374,656
+│    │    └─StochasticDepth: 3-99                  [12, 393, 768]            --
+│    │    └─LayerNorm: 3-100                       [12, 393, 768]            1,536
+│    │    └─MLP: 3-101                             [12, 393, 768]            4,722,432
+│    │    └─StochasticDepth: 3-102                 [12, 393, 768]            --
+├─LayerNorm: 1-4                                   [12, 393, 768]            1,536
+├─Sequential: 1-5                                  [12, 2]                   --
+│    └─Dropout: 2-17                               [12, 768]                 --
+│    └─Linear: 2-18                                [12, 2]                   1,538
+====================================================================================================
+Total params: 34,231,682
+Trainable params: 34,231,682
+Non-trainable params: 0
+Total mult-adds (G): 19.69
+====================================================================================================
+Input size (MB): 115.61
+Forward/backward pass size (MB): 19907.13
+Params size (MB): 136.41
+Estimated Total Size (MB): 20159.14
+====================================================================================================
+validating video labels...: 100%|███████████████████████████████████████████████████████████████████████████████████████████████████████████| 5549/5549 [00:00<00:00, 44515.62it/s]
+Discarded samples: 0
+Dataset stats for train split:
+Class #0: 663
+Class #1: 4886
+slicing and validating videos...: 100%|██████████████████████████████████████████████████████████████████████████████████████████████████████| 5549/5549 [00:04<00:00, 1209.78it/s]
+Dataset stats for train split:
+Class #0: 4635 (x7)
+Class #1: 4886 (x1)
+validating video labels...: 100%|█████████████████████████████████████████████████████████████████████████████████████████████████████████████| 462/462 [00:00<00:00, 43224.81it/s]
+Discarded samples: 0
+Dataset stats for validation split:
+Class #0: 49
+Class #1: 413
+slicing and validating videos...: 100%|████████████████████████████████████████████████████████████████████████████████████████████████████████| 462/462 [00:00<00:00, 1246.26it/s]
+Dataset stats for validation split:
+Class #0: 392 (x8)
+Class #1: 413 (x1)
+validating video labels...: 100%|█████████████████████████████████████████████████████████████████████████████████████████████████████████████| 518/518 [00:00<00:00, 45680.36it/s]
+Discarded samples: 0
+Dataset stats for test split:
+Class #0: 178
+Class #1: 340
+slicing and validating videos...: 100%|████████████████████████████████████████████████████████████████████████████████████████████████████████| 518/518 [00:00<00:00, 1234.90it/s]
+Dataset stats for test split:
+Class #0: 356 (x2)
+Class #1: 340 (x1)
+[TEST] Fetched 10 batches in 4.5372 seconds
+step: 49, loss smoothed: 0.6817, grad_norm smoothed: 0.8325, lr: 4.64e-05
+step: 99, loss smoothed: 0.678, grad_norm smoothed: 0.8495, lr: 6.41e-05
+step: 149, loss smoothed: 0.6477, grad_norm smoothed: 0.988, lr: 8.05e-05
+step: 199, loss smoothed: 0.5672, grad_norm smoothed: 1.3295, lr: 9.82e-05
+step: 249, loss smoothed: 0.5269, grad_norm smoothed: 2.1158, lr: 1.15e-04
+step: 299, loss smoothed: 0.5038, grad_norm smoothed: 2.3894, lr: 1.32e-04
+step: 349, loss smoothed: 0.4451, grad_norm smoothed: 2.3291, lr: 1.49e-04
+step: 399, loss smoothed: 0.4156, grad_norm smoothed: 2.938, lr: 1.66e-04
+step: 449, loss smoothed: 0.4011, grad_norm smoothed: 3.028, lr: 1.83e-04
+step: 499, loss smoothed: 0.391, grad_norm smoothed: 2.8508, lr: 2.00e-04
+step: 549, loss smoothed: 0.3632, grad_norm smoothed: 2.6251, lr: 2.17e-04
+step: 599, loss smoothed: 0.3268, grad_norm smoothed: 2.2488, lr: 2.35e-04
+step: 649, loss smoothed: 0.3235, grad_norm smoothed: 2.4043, lr: 2.51e-04
+step: 699, loss smoothed: 0.3294, grad_norm smoothed: 2.8891, lr: 2.69e-04
+step: 749, loss smoothed: 0.3355, grad_norm smoothed: 3.1644, lr: 2.85e-04
+[ WARN:0@683.643] global loadsave.cpp:1089 imwrite_ Unsupported depth image for selected encoder is fallbacked to CV_8U.
+Epoch 1/10, epoch time: 821.47. Train loss: 0.447056, val loss: 0.392767, val f1: 0.85199 val adv loss: 0.392767, val adv f1: 0.85199step: 49, loss smoothed: 0.1208, grad_norm smoothed: 0.2024, lr: 3.00e-04
+step: 99, loss smoothed: 0.1208, grad_norm smoothed: 0.1573, lr: 3.00e-04
+step: 149, loss smoothed: 0.1203, grad_norm smoothed: 0.087, lr: 3.00e-04
+step: 199, loss smoothed: 0.1191, grad_norm smoothed: 0.0663, lr: 2.99e-04
+step: 249, loss smoothed: 0.1199, grad_norm smoothed: 0.0791, lr: 2.99e-04
+step: 299, loss smoothed: 0.1224, grad_norm smoothed: 0.1263, lr: 2.99e-04
+step: 349, loss smoothed: 0.1214, grad_norm smoothed: 0.1174, lr: 2.98e-04
+step: 399, loss smoothed: 0.1193, grad_norm smoothed: 0.0784, lr: 2.98e-04
+step: 449, loss smoothed: 0.1193, grad_norm smoothed: 0.0907, lr: 2.97e-04
+step: 499, loss smoothed: 0.1189, grad_norm smoothed: 0.0663, lr: 2.97e-04
+step: 549, loss smoothed: 0.1178, grad_norm smoothed: 0.0293, lr: 2.96e-04
+step: 599, loss smoothed: 0.1177, grad_norm smoothed: 0.033, lr: 2.95e-04
+step: 649, loss smoothed: 0.1179, grad_norm smoothed: 0.0551, lr: 2.94e-04
+step: 699, loss smoothed: 0.1183, grad_norm smoothed: 0.0762, lr: 2.93e-04
+step: 749, loss smoothed: 0.1213, grad_norm smoothed: 0.1151, lr: 2.92e-04
+Epoch 2/10, epoch time: 2382.86. Train loss: 0.119733, val loss: 1.763481, val f1: 0.49005 val adv loss: 1.763481, val adv f1: 0.49005step: 49, loss smoothed: 0.122, grad_norm smoothed: 0.072, lr: 2.90e-04
+step: 99, loss smoothed: 0.121, grad_norm smoothed: 0.0739, lr: 2.89e-04
+step: 149, loss smoothed: 0.1195, grad_norm smoothed: 0.083, lr: 2.88e-04
+step: 199, loss smoothed: 0.12, grad_norm smoothed: 0.1634, lr: 2.86e-04
+step: 249, loss smoothed: 0.1199, grad_norm smoothed: 0.1504, lr: 2.85e-04
+step: 299, loss smoothed: 0.1185, grad_norm smoothed: 0.0677, lr: 2.84e-04
+step: 349, loss smoothed: 0.1258, grad_norm smoothed: 0.1883, lr: 2.82e-04
+step: 399, loss smoothed: 0.1296, grad_norm smoothed: 0.2757, lr: 2.80e-04
+step: 449, loss smoothed: 0.1233, grad_norm smoothed: 0.1793, lr: 2.79e-04
+step: 499, loss smoothed: 0.1235, grad_norm smoothed: 0.1811, lr: 2.77e-04
+step: 549, loss smoothed: 0.124, grad_norm smoothed: 0.191, lr: 2.75e-04
+step: 599, loss smoothed: 0.1235, grad_norm smoothed: 0.2111, lr: 2.74e-04
+step: 649, loss smoothed: 0.1222, grad_norm smoothed: 0.1799, lr: 2.72e-04
+step: 699, loss smoothed: 0.1187, grad_norm smoothed: 0.0692, lr: 2.70e-04
+step: 749, loss smoothed: 0.1179, grad_norm smoothed: 0.0453, lr: 2.68e-04
+Epoch 3/10, epoch time: 2392.36. Train loss: 0.121608, val loss: 0.943423, val f1: 0.639304 val adv loss: 0.943423, val adv f1: 0.639304step: 49, loss smoothed: 0.1366, grad_norm smoothed: 0.5093, lr: 2.64e-04
+step: 99, loss smoothed: 0.1346, grad_norm smoothed: 0.4702, lr: 2.62e-04
+step: 149, loss smoothed: 0.126, grad_norm smoothed: 0.2429, lr: 2.60e-04
+step: 199, loss smoothed: 0.1212, grad_norm smoothed: 0.0708, lr: 2.58e-04
+step: 249, loss smoothed: 0.1224, grad_norm smoothed: 0.1213, lr: 2.55e-04
+step: 299, loss smoothed: 0.1367, grad_norm smoothed: 0.3623, lr: 2.53e-04
+step: 349, loss smoothed: 0.1355, grad_norm smoothed: 0.3172, lr: 2.51e-04
+step: 399, loss smoothed: 0.1201, grad_norm smoothed: 0.0816, lr: 2.48e-04
+step: 449, loss smoothed: 0.1198, grad_norm smoothed: 0.1054, lr: 2.46e-04
+step: 499, loss smoothed: 0.1192, grad_norm smoothed: 0.0775, lr: 2.43e-04
+step: 549, loss smoothed: 0.1198, grad_norm smoothed: 0.0862, lr: 2.41e-04
+step: 599, loss smoothed: 0.132, grad_norm smoothed: 0.1891, lr: 2.38e-04
+step: 649, loss smoothed: 0.1381, grad_norm smoothed: 0.2238, lr: 2.35e-04
+step: 699, loss smoothed: 0.1279, grad_norm smoothed: 0.2316, lr: 2.33e-04
+step: 749, loss smoothed: 0.1216, grad_norm smoothed: 0.2013, lr: 2.30e-04
+Epoch 4/10, epoch time: 2355.92. Train loss: 0.126849, val loss: 1.328724, val f1: 0.456468 val adv loss: 1.328724, val adv f1: 0.456468

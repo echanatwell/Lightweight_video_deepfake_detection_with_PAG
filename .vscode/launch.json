@@ -1,0 +1,40 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "train",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "train.py",
+            "console": "integratedTerminal",
+            "justMyCode": false
+        },
+        {
+            "name": "train_mvit",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "train_mvit.py",
+            "console": "integratedTerminal",
+            "justMyCode": false
+        },
+        {
+            "name": "train_mvit_adversarial",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "train_mvit_adversarial.py",
+            "console": "integratedTerminal",
+            "justMyCode": false
+        },
+        {
+            "name": "muon_params",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "model_parameters_muon.py",
+            "console": "integratedTerminal",
+            "justMyCode": false
+        }
+    ]
+}
