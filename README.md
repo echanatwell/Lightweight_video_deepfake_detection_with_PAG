@@ -20,6 +20,7 @@
 2. Обучение MViT с нуля -> 0.63 F1
 3. Дообучение предобученного MViT с заменой головы и заморозкой всего, кроме новой головы -> 0.69 F1 (logs/celebdf_mvit_f.log)
 4. Дообучение предобученного MViT с заменой головы, без заморозки -> 0.95 F1
+5. Дообучение предобученного MViT с заменой головы, без заморозки + PAG -> TBD
 
 ## Выводы
 1. Своя модель учится нормально, просто задача слишком сложная (эксперименты 1 и 2)
@@ -27,7 +28,12 @@
 3. Если дообучить свою модель не на object semantics (как в ImageNet), а на frequency-centered задаче, то можно добиться результатов лучше, чем у предобученного на ImageNet MViT
 
 ## План экспериментов
-1. Предобучение с нуля MViT на frequency-centered SSL задачах:
-    1. Frequency-aware MAE. Input: masked RGB. Target: Highpass(RGB) или Laplassian(RGB) или RGB - Blur(RGB) или что-то подобное
+1. Предобучение с нуля кастомного энкодера на frequency-centered SSL задачах:
+    1. **Frequency-aware MAE**
+       - Input: masked RGB (mask ratio=0.75)
+       - Target: per-patch normalized Highpass(RGB) = RGB - GaussianBlur(RGB) (kernel=5, σ=1.0)
+       - Encoder: 4x CustomTransformerEncoderLayer (d_model=128), Decoder: 2x lightweight transformer (d_dec=128)
+       - Pretraining: 200 эпох на CelebDF train split (SSL, без меток), LR 1.5e-4 → 1e-5
+       - Finetuning: (5 эпох, LR 0.0003→0.00001)
     2. Frequency-domain MAE. Input: masked FFT(RGB) или DCT(RGB). Target: RGB + FFT(RGB) reconstruction или RGB + DCT(RGB) reconstruction
 2. Если все мои предыдущие выводы верны, то предлагаемый эксперимент 1 выйдет удачным (F1 0.95+). Тогда можно будет сделать подобное для своей модели.

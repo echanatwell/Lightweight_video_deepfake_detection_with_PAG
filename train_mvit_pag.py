@@ -1,47 +1,43 @@
 import os
 import shutil
-
 import torch
 from torch import nn
 from torch.utils.data import DataLoader
 from torchmetrics import F1Score
 from torchvision.transforms import v2 as T
-
 import cv2
 import numpy as np
 import time
+import random
 from sklearn.metrics import classification_report
-
 import matplotlib.pyplot as plt
 from datasets.ffpp import FFPPDataset
 from datasets.celebdf import CelebDFDataset
 from model.model import Model
 import torchvision
 from torchinfo import summary
-import random
 from adversarial_utils import pgd_attack
 
 
 # ---------------------------------------------------------------------------
-# Constants
+# Constants (module-level is fine — no side-effects)
 # ---------------------------------------------------------------------------
 
 DEVICE = 'cuda:0'
-EPOCHS = 10
-LR_0 = 0.0005
-LR_N = 0.0001
+EPOCHS = 5
+LR_0 = 0.0003
+LR_N = 0.00001
 BATCH_SIZE = 12
 MAX_FRAMES_PER_VIDEO = 16
 NUM_CLASSES = 2
 IMG_SIZE = 224
-
 GRADIENT_ACCUMULATION_STEPS = 4
 
+# PAG hyperparameters: growing eps schedule identical to reference train_adversarial.py
 EPS_0 = 0.03
 EPS_N = 0.3
-ADV_START_EPOCH = 1
-
-EXP_NAME = "MViT_CelebDF_adv"
+PGD_ITERATIONS = 3
+EXP_NAME = "MViT_CelebDF_PAG"
 
 
 # ---------------------------------------------------------------------------
@@ -49,7 +45,7 @@ EXP_NAME = "MViT_CelebDF_adv"
 # ---------------------------------------------------------------------------
 
 if __name__ == '__main__':
-    eps_schedule = torch.linspace(EPS_0, EPS_N, EPOCHS - ADV_START_EPOCH, device=DEVICE)
+    eps_schedule = torch.linspace(EPS_0, EPS_N, EPOCHS, device=DEVICE)
 
     train_loss_history = list()
     val_loss_history = list()
@@ -59,13 +55,13 @@ if __name__ == '__main__':
 
     model = torchvision.models.video.mvit_v2_s(torchvision.models.video.MViT_V2_S_Weights.DEFAULT)
     model.eval()
+
     model.head = nn.Sequential(
         nn.Dropout(0.1),
         nn.Linear(768, 2)
     )
     model.to(DEVICE)
 
-    # model.print_summary(BATCH_SIZE, 4)
     summary(model, input_size=(BATCH_SIZE, 3, MAX_FRAMES_PER_VIDEO, IMG_SIZE, IMG_SIZE))
 
     transforms = torchvision.models.video.MViT_V2_S_Weights.DEFAULT.transforms()
@@ -94,8 +90,9 @@ if __name__ == '__main__':
     warmup_iters = int(len(train_loader) * EPOCHS / GRADIENT_ACCUMULATION_STEPS * 0.1)
     regular_iters = int(len(train_loader) * EPOCHS / GRADIENT_ACCUMULATION_STEPS * 0.9)
 
-    warmup_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, 0.25, 1, total_iters=warmup_iters)
+    warmup_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, 0.1, 1, total_iters=warmup_iters)
     regular_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=regular_iters, eta_min=LR_N)
+
     lr_scheduler = torch.optim.lr_scheduler.SequentialLR(optimizer, [warmup_scheduler, regular_scheduler], [warmup_iters])
 
     step_losses = list()
@@ -111,62 +108,64 @@ if __name__ == '__main__':
     print(f'[TEST] Fetched 10 batches in {round(time.time() - start, 4)} seconds')
 
     for epoch in range(EPOCHS):
-        if epoch >= ADV_START_EPOCH:
-            eps = eps_schedule[epoch - ADV_START_EPOCH]
-        else:
-            eps = 0
-
+        eps = eps_schedule[epoch]
         model.train()
 
         train_loss = 0
         val_loss = 0
-        val_adv_loss = 0
-        val_f1 = 0
         val_adv_loss = 0
 
         epoch_loss_history = list()
         epoch_grad_norm_history = list()
 
         start = time.time()
-
         for step, (x, attention_masks, y) in enumerate(train_loader):
             x = x.to(DEVICE, non_blocking=True)
             attention_masks = attention_masks.to(DEVICE, non_blocking=True)
             y = y.to(DEVICE, non_blocking=True)
 
-            if epoch >= ADV_START_EPOCH:
-                y_adv = torch.as_tensor([random.choice(list(set(range(NUM_CLASSES)) - set([y[i].item()]))) for i in range(y.shape[0])], device=DEVICE)
-                assert torch.all(y != y_adv)
-                x_adv = pgd_attack(x, y_adv, model, eps)
+            # PAG: train exclusively on adversarially perturbed inputs (adv-only loss).
+            # y_adv is a random wrong class for each sample — this is the targeted PGD
+            # direction used in the reference perception-aligned-gradients repo.
+            y_adv = torch.as_tensor(
+                [random.choice(list(set(range(NUM_CLASSES)) - {y[i].item()})) for i in range(y.shape[0])],
+                device=DEVICE
+            )
 
-                y_pred = model(x_adv)
-            else:
-                y_pred = model(x)
+            assert torch.all(y != y_adv)
 
+            x_adv = pgd_attack(x, y_adv, model, eps.item(), pgd_iterations=PGD_ITERATIONS)
+            y_pred = model(x_adv)
             loss = criterion(y_pred, y)
-            # since we use gradient accumation which is additive, loss should be scaled by GRADIENT_ACUMULATION_STEPS
+
+            # since we use gradient accumulation which is additive, loss should be scaled
             (loss / GRADIENT_ACCUMULATION_STEPS).backward()
 
             total_norm = nn.utils.get_total_norm([p.grad for p in model.parameters() if p.grad is not None]).mean().item()
 
             epoch_loss_history.append(loss.item())
             epoch_grad_norm_history.append(total_norm)
-
             step_grad_norms.append(total_norm)
             step_lrs.append(lr_scheduler.get_last_lr()[0])
             step_losses.append(loss.item())
 
             train_loss += loss.item()
+
             if (step + 1) % GRADIENT_ACCUMULATION_STEPS == 0:
                 optimizer.step()
                 lr_scheduler.step()
                 optimizer.zero_grad()
 
             if step % 50 == 49:
-                print(f'step: {step}, loss smoothed: {round(sum(epoch_loss_history[-100:]) / min(100, step + 1), 4)}, grad_norm smoothed: {round(sum(epoch_grad_norm_history[-100:]) / min(100, step + 1), 4)}, lr: {"{:0.2e}".format(lr_scheduler.get_last_lr()[0])}')
+                print(
+                    f'step: {step}, '
+                    f'loss smoothed: {round(sum(epoch_loss_history[-100:]) / min(100, step + 1), 4)}, '
+                    f'grad_norm smoothed: {round(sum(epoch_grad_norm_history[-100:]) / min(100, step + 1), 4)}, '
+                    f'lr: {"{:0.2e}".format(lr_scheduler.get_last_lr()[0])}, '
+                    f'eps: {round(eps.item(), 4)}'
+                )
 
         model.eval()
-
         val_y_target = list()
         val_y_pred = list()
         val_y_adv_pred = list()
@@ -180,13 +179,15 @@ if __name__ == '__main__':
                 y_pred = model(x)
 
             loss = criterion(y_pred, y)
-
             val_loss += loss.item()
+
             val_y_pred.append(y_pred.argmax(-1))
             val_y_target.append(y)
 
+            # Gradient visualization every 2 epochs on the first val batch.
+            # Saves ∂L/∂x maps to compare PAG quality against Exp 4 (train_mvit.py).
             if batch_idx == 0 and epoch % 2 == 0:
-                grad_vis_save_dir = f'./adversarially_trained_model/grad_vis/epoch{epoch+1}'
+                grad_vis_save_dir = f'./pag_trained_model/grad_vis/epoch{epoch + 1}'
 
                 if os.path.exists(grad_vis_save_dir):
                     shutil.rmtree(grad_vis_save_dir)
@@ -194,60 +195,69 @@ if __name__ == '__main__':
 
                 x_grad = x.detach().clone().requires_grad_().to(DEVICE)
                 model.requires_grad_(False)
-                y_pred = model(x_grad)
-                loss = criterion(y_pred, y_pred.argmax(-1))  # in inference mode we know nothing about real label
-                loss.backward()
+                y_pred_vis = model(x_grad)
 
-                # B, F, C, H, W
-                grad = x_grad.grad
-                grad = grad.cpu().numpy().mean(axis=2)[:, 0]
+                # Use predicted label as target — inference mode, no ground truth assumed
+                loss_vis = criterion(y_pred_vis, y_pred_vis.argmax(-1))
+                loss_vis.backward()
 
+                # B, F, C, H, W -> average over channels, take first frame
+                grad = x_grad.grad.cpu().numpy().mean(axis=2)[:, 0]
                 x_np = ((x.detach() + 1) * 127.5).cpu().numpy().astype(np.uint8).mean(axis=2)[:, 0]
                 for i in range(y.shape[0]):
                     r = np.abs(grad[i]).max()
-
                     fig, axes = plt.subplots(nrows=1, ncols=2, figsize=(10, 5))
                     axes[0].imshow(x_np[i], cmap='gray')
                     axes[0].set_title('Original image')
                     axes[1].matshow(grad[i], cmap='bwr', vmin=-r, vmax=r)
-                    axes[1].set_title('Gradient w.r.t. input data')
-
+                    axes[1].set_title('Gradient w.r.t. input (PAG)')
                     fig.savefig(os.path.join(grad_vis_save_dir, f'{i}_{y[i]}.png'))
                     plt.close(fig)
-
                 model.requires_grad_()
 
+            # Adversarial sample visualization on the last val batch every 2 epochs
             if batch_idx == len(val_loader) - 1 and epoch % 2 == 0:
-                adv_samples_save_dir = f'./adversarially_trained_model/adversarial_samples/epoch{epoch+1}'
+                adv_samples_save_dir = f'./pag_trained_model/adversarial_samples/epoch{epoch + 1}'
 
                 if os.path.exists(adv_samples_save_dir):
                     shutil.rmtree(adv_samples_save_dir)
+
                 os.makedirs(adv_samples_save_dir)
 
-                y_adv = torch.as_tensor([random.choice(list(set(range(NUM_CLASSES)) - set([y[i].item()]))) for i in range(y.shape[0])], device=DEVICE)
-                x_adv_vis = pgd_attack(x[:16], y_adv[:16], model, 0.3)
+                y_adv_vis = torch.as_tensor(
+                    [random.choice(list(set(range(NUM_CLASSES)) - {y[i].item()})) for i in range(y.shape[0])],
+                    device=DEVICE
+                )
 
+                x_adv_vis = pgd_attack(x[:16], y_adv_vis[:16], model, eps.item(), pgd_iterations=PGD_ITERATIONS)
                 x_np = ((x.detach() + 1) * 127.5).cpu().numpy().astype(np.uint8).mean(axis=2)[:, 0]
-                x_adv_vis = ((x_adv_vis.detach() + 1) * 127.5).cpu().numpy().astype(np.uint8).mean(axis=2)[:, 0]
+                x_adv_np = ((x_adv_vis.detach() + 1) * 127.5).cpu().numpy().astype(np.uint8).mean(axis=2)[:, 0]
 
-                for i, (x_np_, x_adv_vis_) in enumerate(zip(x_np, x_adv_vis)):
-                    cv2.imwrite(os.path.join(adv_samples_save_dir, f'{y[i]}_{y_adv[i]}.png'), np.hstack([x_np_, x_adv_vis_]))
+                for i, (x_np_, x_adv_np_) in enumerate(zip(x_np, x_adv_np)):
+                    cv2.imwrite(
+                        os.path.join(adv_samples_save_dir, f'{y[i]}_{y_adv_vis[i]}.png'),
+                        np.hstack([x_np_, x_adv_np_])
+                    )
 
-        if epoch >= ADV_START_EPOCH:
-            for x, attention_masks, y in val_loader:
-                x = x.to(DEVICE, non_blocking=True)
-                y = y.to(DEVICE, non_blocking=True)
+        # Adversarial validation: measure robustness of the PAG-trained model
+        for x, attention_masks, y in val_loader:
+            x = x.to(DEVICE, non_blocking=True)
+            y = y.to(DEVICE, non_blocking=True)
 
-                y_adv = torch.as_tensor([random.choice(list(set(range(NUM_CLASSES)) - set([y[i].item()]))) for i in range(y.shape[0])], device=DEVICE)
-                x_adv = pgd_attack(x, y_adv, model, eps)
+            y_adv = torch.as_tensor(
+                [random.choice(list(set(range(NUM_CLASSES)) - {y[i].item()})) for i in range(y.shape[0])],
+                device=DEVICE
+            )
 
-                with torch.no_grad():
-                    y_pred = model(x_adv)
+            x_adv = pgd_attack(x, y_adv, model, eps.item(), pgd_iterations=PGD_ITERATIONS)
 
-                loss = criterion(y_pred, y)
+            with torch.no_grad():
+                y_pred = model(x_adv)
 
-                val_adv_loss += loss.item()
-                val_y_adv_pred.append(y_pred.argmax(-1))
+            loss = criterion(y_pred, y)
+            val_adv_loss += loss.item()
+
+            val_y_adv_pred.append(y_pred.argmax(-1))
 
         val_y_pred = torch.cat(val_y_pred)
         val_y_target = torch.cat(val_y_target)
@@ -259,10 +269,10 @@ if __name__ == '__main__':
         val_adv_loss_history.append(val_adv_loss / len(val_loader))
         val_adv_f1_history.append(f1_score_fn(val_y_adv_pred, val_y_target).item())
 
-        print(f'Epoch {epoch+1}/{EPOCHS}, epoch time: {round(time.time() - start, 2)}.', end='')
+        print(f'Epoch {epoch + 1}/{EPOCHS}, epoch time: {round(time.time() - start, 2)}, eps: {round(eps.item(), 4)}.', end='')
         print(f' Train loss: {round(train_loss_history[-1], 6)},', end='')
-        print(f' val loss: {round(val_loss_history[-1], 6)}, val f1: {round(val_f1_history[-1], 6)}', end='')
-        print(f' val adv loss: {round(val_loss_history[-1], 6)}, val adv f1: {round(val_f1_history[-1], 6)}')
+        print(f' val loss: {round(val_loss_history[-1], 6)}, val f1: {round(val_f1_history[-1], 6)},', end='')
+        print(f' val adv loss: {round(val_adv_loss_history[-1], 6)}, val adv f1: {round(val_adv_f1_history[-1], 6)}')
 
     smoothing_ksize = 100
     step_losses_smoothed = np.convolve(step_losses, np.ones(smoothing_ksize) / smoothing_ksize, mode='same')
@@ -285,6 +295,7 @@ if __name__ == '__main__':
     model.eval()
     test_y_target = list()
     test_y_pred = list()
+
     for x, attention_masks, y in test_loader:
         x = x.to(DEVICE)
         attention_masks = attention_masks.to(DEVICE)
