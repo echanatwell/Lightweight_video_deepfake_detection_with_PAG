@@ -16,22 +16,23 @@ import time
 import matplotlib.pyplot as plt
 
 from datasets.celebdf import CelebDFDataset
+from datasets.combined_dataset import CombinedVideoDataset
 from model.mae_model import FrequencyAwareMAE
 
 
 # ---------------------------------------------------------------------------
-# Constants
+# Constants (module-level is fine — no side-effects)
 # ---------------------------------------------------------------------------
 
 DEVICE = 'cuda:0'
 EPOCHS = 200
 LR_0 = 1.5e-4
 LR_N = 1e-5
-BATCH_SIZE = 4
+BATCH_SIZE = 8
 MAX_FRAMES_PER_VIDEO = 16
 IMG_SIZE = 224
 
-GRADIENT_ACCUMULATION_STEPS = 8
+GRADIENT_ACCUMULATION_STEPS = 2
 
 # MAE hyperparameters
 MASK_RATIO = 0.75
@@ -44,7 +45,7 @@ DECODER_NUM_HEADS = 4
 BLUR_KERNEL = 5
 BLUR_SIGMA = 1.0
 
-EXP_NAME = "MAE_CelebDF_FreqAware"
+EXP_NAME = "MAE_CelebDF_FFPP_FreqAware_rgbtarget"
 CHECKPOINT_PATH = f"{EXP_NAME}_encoder.pth"
 FULL_CHECKPOINT_PATH = f"{EXP_NAME}_full.pth"
 
@@ -87,7 +88,7 @@ if __name__ == '__main__':
     print(f'Encoder params: {encoder_params:,}')
     print(f'Decoder params: {total_params - encoder_params:,}')
 
-    # Transforms
+    # Transforms: same as train.py custom transforms (no MViT-specific normalization)
     # Input is normalized to [-1, 1] as expected by the model
     train_transforms = T.Compose([
         T.Resize((IMG_SIZE, IMG_SIZE), T.InterpolationMode.BICUBIC),
@@ -98,11 +99,20 @@ if __name__ == '__main__':
         T.Lambda(normalize_neg1_to_1),  # [0,1] -> [-1,1]
     ])
 
-    dataset_path = '/home/peter/faigc/data/Celeb-DF-v2'
+    celebdf_path = '../datasets/Celeb-DF-v2'
+    ffpp_path = '../datasets/ffpp'
 
     # Labels are loaded but not used — CelebDFDataset returns (x, attention_mask, y)
-    train_dataset = CelebDFDataset(
-        dataset_path=dataset_path,
+    # train_dataset = CelebDFDataset(
+    #     dataset_path=dataset_path,
+    #     transforms=train_transforms,
+    #     frames_per_video=MAX_FRAMES_PER_VIDEO,
+    #     split='train',
+    # )
+
+    train_dataset = CombinedVideoDataset(
+        celebdf_path=celebdf_path,
+        ff_path=ffpp_path,
         transforms=train_transforms,
         frames_per_video=MAX_FRAMES_PER_VIDEO,
         split='train',
@@ -112,7 +122,7 @@ if __name__ == '__main__':
         train_dataset,
         BATCH_SIZE,
         shuffle=True,
-        num_workers=8,
+        num_workers=2,
         drop_last=True,
         pin_memory=True,
     )

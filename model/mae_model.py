@@ -233,7 +233,7 @@ class FrequencyAwareMAE(nn.Module):
                     nn.init.zeros_(m.bias)
             elif isinstance(m, (nn.LayerNorm, nn.RMSNorm)):
                 nn.init.ones_(m.weight)
-                if m.bias is not None:
+                if hasattr(m, 'bias') and m.bias is not None:
                     nn.init.zeros_(m.bias)
 
     # ------------------------------------------------------------------

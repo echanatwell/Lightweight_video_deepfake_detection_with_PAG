@@ -22,8 +22,9 @@ from sklearn.metrics import classification_report
 import matplotlib.pyplot as plt
 
 from datasets.celebdf import CelebDFDataset
+from datasets.combined_dataset import CombinedVideoDataset
 from model.mae_model import FrequencyAwareMAE
-
+from model.mae_model import patchify
 
 # ---------------------------------------------------------------------------
 # Classifier built on top of the pretrained MAE encoder
@@ -55,10 +56,10 @@ class MAEClassifier(nn.Module):
         self.encoder_layers = mae.encoder_layers
         self.encoder_norm = mae.encoder_norm
 
-        # Sequence pooling weight
+        # Sequence pooling weight (same design as Model.seq_pool_weight)
         self.seq_pool_weight = nn.Linear(d_model, 1)
 
-        # Classification head
+        # Classification head (same design as Model.classification_head)
         self.classification_head = nn.Sequential(
             nn.Linear(d_model, 64),
             nn.BatchNorm1d(64),
@@ -92,7 +93,6 @@ class MAEClassifier(nn.Module):
         Returns:
             logits: (B, num_classes)
         """
-        from model.mae_model import patchify
 
         patches, grids = patchify(x, patch_size=16)  # (B, N, 768)
         hidden = self.patch_embedding(patches)         # (B, N, d_model)
@@ -166,6 +166,10 @@ def parse_args():
     )
     return parser.parse_args()
 
+# Named function instead of lambda to support multiprocessing pickling on Windows
+def normalize_neg1_to_1(x):
+    """Scale tensor from [0, 1] to [-1, 1]."""
+    return x * 2 - 1
 
 if __name__ == '__main__':
     args = parse_args()
@@ -178,9 +182,9 @@ if __name__ == '__main__':
     MAX_FRAMES_PER_VIDEO = 16
     NUM_CLASSES = 2
     IMG_SIZE = 224
-    GRADIENT_ACCUMULATION_STEPS = 4
+    GRADIENT_ACCUMULATION_STEPS = 2
 
-    EXP_NAME = "MAE_Finetune_CelebDF"
+    EXP_NAME = "MAE_pt_CDF_FFPP_ft_CDF_FPP_clsw_rgbtarget"
 
     train_loss_history = list()
     val_loss_history = list()
@@ -194,12 +198,9 @@ if __name__ == '__main__':
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f'Total params: {total_params:,}, trainable: {trainable_params:,}')
 
-    # Named function instead of lambda to support multiprocessing pickling on Windows
-    def normalize_neg1_to_1(x):
-        """Scale tensor from [0, 1] to [-1, 1]."""
-        return x * 2 - 1
+    # ---- Transforms (same as train.py — no MViT-specific normalization) ----
+   
 
-    # ---- Transforms ----
     train_transforms = T.Compose([
         T.Resize((IMG_SIZE, IMG_SIZE), T.InterpolationMode.BICUBIC),
         T.RandomChoice([
@@ -220,27 +221,72 @@ if __name__ == '__main__':
     ])
 
     # ---- Dataset ----
-    dataset_path = '/home/peter/faigc/data/Celeb-DF-v2'
+    # dataset_path = '../datasets/Celeb-DF-v2'
 
-    train_dataset = CelebDFDataset(
-        dataset_path=dataset_path, transforms=train_transforms,
-        frames_per_video=MAX_FRAMES_PER_VIDEO, split='train',
-    )
-    val_dataset = CelebDFDataset(
-        dataset_path=dataset_path, transforms=test_transforms,
-        frames_per_video=MAX_FRAMES_PER_VIDEO, split='validation',
-    )
-    test_dataset = CelebDFDataset(
-        dataset_path=dataset_path, transforms=test_transforms,
-        frames_per_video=MAX_FRAMES_PER_VIDEO, split='test',
+    # train_dataset = CelebDFDataset(
+    #     dataset_path=dataset_path, transforms=train_transforms,
+    #     frames_per_video=MAX_FRAMES_PER_VIDEO, split='train',
+    # )
+    # val_dataset = CelebDFDataset(
+    #     dataset_path=dataset_path, transforms=test_transforms,
+    #     frames_per_video=MAX_FRAMES_PER_VIDEO, split='validation',
+    # )
+    # test_dataset = CelebDFDataset(
+    #     dataset_path=dataset_path, transforms=test_transforms,
+    #     frames_per_video=MAX_FRAMES_PER_VIDEO, split='test',
+    # )
+
+    celebdf_path = '../datasets/Celeb-DF-v2'
+    ffpp_path = '../datasets/ffpp'
+    
+    train_dataset = CombinedVideoDataset(
+        celebdf_path=celebdf_path,
+        ff_path=ffpp_path,
+        transforms=train_transforms,
+        frames_per_video=MAX_FRAMES_PER_VIDEO,
+        split='train',
     )
 
-    train_loader = DataLoader(train_dataset, BATCH_SIZE, shuffle=True, num_workers=10, drop_last=True, pin_memory=True)
-    val_loader = DataLoader(val_dataset, BATCH_SIZE, shuffle=False, num_workers=8, drop_last=True, pin_memory=True)
-    test_loader = DataLoader(test_dataset, BATCH_SIZE, shuffle=False, num_workers=8, drop_last=True)
+    val_dataset = CombinedVideoDataset(
+        celebdf_path=celebdf_path,
+        ff_path=ffpp_path,
+        transforms=test_transforms,
+        frames_per_video=MAX_FRAMES_PER_VIDEO,
+        split='validation',
+    )
 
-    # ---- Optimizer & scheduler ----
-    criterion = nn.CrossEntropyLoss(label_smoothing=0.05)
+    test_dataset = CombinedVideoDataset(
+        celebdf_path=celebdf_path,
+        ff_path=ffpp_path,
+        transforms=test_transforms,
+        frames_per_video=MAX_FRAMES_PER_VIDEO,
+        split='test',
+    )
+
+    # train_loader = DataLoader(
+    #     train_dataset,
+    #     BATCH_SIZE,
+    #     shuffle=True,
+    #     num_workers=4,
+    #     drop_last=True,
+    #     pin_memory=True,
+    # )
+
+    train_loader = DataLoader(train_dataset, BATCH_SIZE, shuffle=True, num_workers=2, drop_last=True, pin_memory=True)
+    val_loader = DataLoader(val_dataset, BATCH_SIZE, shuffle=False, num_workers=2, drop_last=True, pin_memory=True)
+    test_loader = DataLoader(test_dataset, BATCH_SIZE, shuffle=False, num_workers=2, drop_last=True)
+
+    # ---- Optimizer & scheduler (identical to Exp 4 / train_mvit.py) ----
+    # Считаем веса обратно пропорционально частоте классов
+    n_real = sum(1 for _, lbl in train_dataset.celebdf_dataset.entries if lbl == 0) + \
+        sum(1 for _, lbl in train_dataset.ff_dataset.entries if lbl == 0)
+    n_fake = sum(1 for _, lbl in train_dataset.celebdf_dataset.entries if lbl == 1) + \
+        sum(1 for _, lbl in train_dataset.ff_dataset.entries if lbl == 1)
+    n_total = n_real + n_fake
+    class_weights = torch.tensor([n_total / (2 * n_real), n_total / (2 * n_fake)], device=DEVICE) # sklearn compute_class_weight
+    criterion = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=0.05)
+    # criterion = nn.CrossEntropyLoss(label_smoothing=0.05)
+
     f1_score_fn = F1Score(task="multiclass", num_classes=NUM_CLASSES).to(DEVICE)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=LR_0, weight_decay=0.05)
@@ -265,7 +311,9 @@ if __name__ == '__main__':
         next(iterator)
     print(f'[TEST] Fetched 10 batches in {round(time.time() - start, 4)} seconds')
 
-    # ---- Training loop ----
+    best_f1 = -1
+
+    # ---- Training loop (identical structure to train_mvit.py) ----
     for epoch in range(EPOCHS):
         model.train()
 
@@ -339,6 +387,10 @@ if __name__ == '__main__':
         print(f'Epoch {epoch + 1}/{EPOCHS}, epoch time: {round(time.time() - start, 2)}.', end='')
         print(f' Train loss: {round(train_loss_history[-1], 6)},', end='')
         print(f' val loss: {round(val_loss_history[-1], 6)}, val f1: {round(val_f1_history[-1], 6)}')
+
+        if val_f1_history[-1] > best_f1:
+            best_f1 = val_f1_history[-1]
+            torch.save(model.state_dict(), f"./checkpoints/{EXP_NAME}_classifier.pth")
 
     # ---- Plots ----
     smoothing_ksize = 100
