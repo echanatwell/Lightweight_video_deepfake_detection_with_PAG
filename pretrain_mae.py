@@ -6,6 +6,10 @@ After training, the encoder weights are saved to mae_encoder_checkpoint.pth
 for use in finetune_mae.py.
 """
 
+import os
+import argparse
+import shutil
+
 import torch
 from torch import nn
 from torch.utils.data import DataLoader
@@ -15,7 +19,6 @@ import numpy as np
 import time
 import matplotlib.pyplot as plt
 
-from datasets.celebdf import CelebDFDataset
 from datasets.combined_dataset import CombinedVideoDataset
 from model.mae_model import FrequencyAwareMAE
 
@@ -24,13 +27,20 @@ from model.mae_model import FrequencyAwareMAE
 # Constants (module-level is fine — no side-effects)
 # ---------------------------------------------------------------------------
 
+def parse_args():
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument('--epochs', type=int, default=200)
+    parser.add_argument('--batch_size', type=int, default=8)
+    parser.add_argument('--frames_per_video', type=int, default=16)
+    parser.add_argument('--img_size', type=int, default=224)
+    parser.add_argument('--gradient_accumulation_steps', type=int, default=2)
+
+    return parser.parse_args()
+
 DEVICE = 'cuda:0'
-EPOCHS = 200
 LR_0 = 1.5e-4
 LR_N = 1e-5
-BATCH_SIZE = 8
-MAX_FRAMES_PER_VIDEO = 16
-IMG_SIZE = 224
 
 GRADIENT_ACCUMULATION_STEPS = 2
 
@@ -45,10 +55,14 @@ DECODER_NUM_HEADS = 4
 BLUR_KERNEL = 5
 BLUR_SIGMA = 1.0
 
+OUTPUT_DIR = "/scratch/users/k25137033/interpretability/Lightweight_video_deepfake_detection_with_PAG"
 EXP_NAME = "MAE_CelebDF_FFPP_FreqAware_rgbtarget"
-CHECKPOINT_PATH = f"{EXP_NAME}_encoder.pth"
-FULL_CHECKPOINT_PATH = f"{EXP_NAME}_full.pth"
+CHECKPOINT_PATH = os.path.join(OUTPUT_DIR, EXP_NAME, "encoder.pth")
+FULL_CHECKPOINT_PATH = os.path.join(OUTPUT_DIR, EXP_NAME, "full.pth")
 
+if os.path.exists(os.path.join(OUTPUT_DIR, EXP_NAME)):
+    shutil.rmtree(os.path.join(OUTPUT_DIR, EXP_NAME))
+os.mkdir(os.path.join(OUTPUT_DIR, EXP_NAME))
 
 # Named function instead of lambda to support multiprocessing pickling on Windows
 def normalize_neg1_to_1(x):
@@ -61,6 +75,14 @@ def normalize_neg1_to_1(x):
 # ---------------------------------------------------------------------------
 
 if __name__ == '__main__':
+    args = parse_args()
+
+    EPOCHS = args.epochs
+    BATCH_SIZE = args.batch_size
+    FRAMES_PER_VIDEO = args.frames_per_video
+    IMG_SIZE = args.img_size
+    GRADIENT_ACCUMULATION_STEPS = args.gradient_accumulation_steps
+
     train_loss_history = list()
 
     model = FrequencyAwareMAE(
@@ -72,7 +94,7 @@ if __name__ == '__main__':
         decoder_num_heads=DECODER_NUM_HEADS,
         mask_ratio=MASK_RATIO,
         patch_size=16,
-        max_frames=MAX_FRAMES_PER_VIDEO,
+        max_frames=FRAMES_PER_VIDEO,
         img_size=IMG_SIZE,
         blur_kernel=BLUR_KERNEL,
         blur_sigma=BLUR_SIGMA,
@@ -106,7 +128,7 @@ if __name__ == '__main__':
     # train_dataset = CelebDFDataset(
     #     dataset_path=dataset_path,
     #     transforms=train_transforms,
-    #     frames_per_video=MAX_FRAMES_PER_VIDEO,
+    #     frames_per_video=FRAMES_PER_VIDEO,
     #     split='train',
     # )
 
@@ -114,7 +136,7 @@ if __name__ == '__main__':
         celebdf_path=celebdf_path,
         ff_path=ffpp_path,
         transforms=train_transforms,
-        frames_per_video=MAX_FRAMES_PER_VIDEO,
+        frames_per_video=FRAMES_PER_VIDEO,
         split='train',
     )
 
@@ -122,7 +144,7 @@ if __name__ == '__main__':
         train_dataset,
         BATCH_SIZE,
         shuffle=True,
-        num_workers=2,
+        num_workers=8,
         drop_last=True,
         pin_memory=True,
     )
@@ -225,7 +247,7 @@ if __name__ == '__main__':
                         'd_model': D_MODEL,
                         'num_heads': NUM_HEADS,
                         'patch_size': 16,
-                        'max_frames': MAX_FRAMES_PER_VIDEO,
+                        'max_frames': FRAMES_PER_VIDEO,
                         'img_size': IMG_SIZE,
                     },
                 },
@@ -235,7 +257,7 @@ if __name__ == '__main__':
 
         # Save full model checkpoint every 50 epochs
         if (epoch + 1) % 50 == 0:
-            torch.save(model.state_dict(), f'{EXP_NAME}_epoch{epoch + 1}.pth')
+            torch.save(model.state_dict(), os.path.join(OUTPUT_DIR, EXP_NAME, f'epoch{epoch + 1}.pth'))
             print(f'  -> Saved full checkpoint at epoch {epoch + 1}')
 
     # Save final full model
@@ -259,8 +281,8 @@ if __name__ == '__main__':
     axes[2].legend()
     axes[2].set_title("Grad Norm / step")
 
-    fig.savefig(f'{EXP_NAME}_training_curves.png')
-    print(f'Saved training curves to {EXP_NAME}_training_curves.png')
+    fig.savefig(os.path.join(OUTPUT_DIR, EXP_NAME, 'training_curves.png'))
+    print(f'Saved training curves to training_curves.png')
 
     # Epoch-level loss curve
     fig2, ax2 = plt.subplots(figsize=(8, 4))
@@ -268,5 +290,5 @@ if __name__ == '__main__':
     ax2.set_xlabel('Epoch')
     ax2.set_ylabel('MSE Loss')
     ax2.set_title('Frequency-Aware MAE Pretraining Loss')
-    fig2.savefig(f'{EXP_NAME}_epoch_loss.png')
-    print(f'Saved epoch loss curve to {EXP_NAME}_epoch_loss.png')
+    fig2.savefig(os.path.join(OUTPUT_DIR, EXP_NAME, 'epoch_loss.png'))
+    print(f'Saved epoch loss curve to epoch_loss.png')

@@ -7,8 +7,8 @@ import torch
 from torch import Tensor
 from torch.utils.data import Dataset, ConcatDataset
 
-from celebdf import CelebDFDataset
-from faceforensics import FaceForensicsDataset
+from datasets.celebdf import CelebDFDataset
+from datasets.faceforensics import FaceForensicsDataset
 
 
 class CombinedVideoDataset(Dataset):

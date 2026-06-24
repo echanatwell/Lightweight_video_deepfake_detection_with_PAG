@@ -172,17 +172,22 @@ def _read_frames_pyav(video_path: str, frames_per_video: int) -> Optional[np.nda
     framerate = container.streams.video[0].average_rate
     time_base = container.streams.video[0].time_base
 
-    start_frame = random.randint(total_frames - frames_per_video - 1, total_frames)
-    indices = list(range(start_frame, start_frame + frames_per_video + 1))
+    start_frame = random.randint(0, max(total_frames - frames_per_video, 0))
+    indices = list(range(start_frame, min(start_frame + frames_per_video + 1, total_frames-1)))
 
     sec = int(start_frame / framerate)
     container.seek(int(sec / time_base))
 
-    frames = [] 
+    frames = []
+    c = 0 
 
     for frame in container.decode(video=0):
         frame = frame.to_ndarray(format='bgr24')
         frames.append(frame)
+
+        c += 1
+        if c >= frames_per_video:
+            break
 
     frames = np.array(frames)
 
@@ -226,12 +231,14 @@ class CelebDFDataset(Dataset):
         transforms: Optional[Callable] = None,
         frames_per_video: int = 16,
         split: str = "train",
+        img_size: int = 224
     ) -> None:
         super().__init__()
         self.dataset_path     = dataset_path
         self.transforms       = transforms
         self.frames_per_video = frames_per_video
         self.split            = split
+        self.img_size         = img_size
 
         self.entries: List[Tuple[str, int]] = _split_dataset(dataset_path, split)
 
@@ -258,11 +265,11 @@ class CelebDFDataset(Dataset):
         # normal case.  We keep the mask for API compatibility with models that
         # accept it (e.g. the custom Transformer in model.py).
         if frames is not None:
-            n_valid = self.frames_per_video
+            n_valid = len(frames)
         else:
             # complete failure: synthesise a black clip
             frames = np.zeros(
-                (self.frames_per_video, 224, 224, 3), dtype=np.uint8
+                (self.frames_per_video, self.img_size, self.img_size, 3), dtype=np.uint8
             )
             n_valid = 0
 
@@ -280,6 +287,9 @@ class CelebDFDataset(Dataset):
 
         # stack: (T, C, H, W) → permute → (C, T, H, W)
         x: Tensor = torch.stack(frame_tensors, dim=0).permute(1, 0, 2, 3)
+
+        if n_valid < self.frames_per_video:
+            x = torch.cat([x, torch.zeros((3, self.frames_per_video - n_valid, self.img_size, self.img_size), dtype=torch.float32)], dim=1)
 
         return x, attention_mask, torch.tensor(label, dtype=torch.long)
 
