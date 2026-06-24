@@ -26,6 +26,7 @@ Splits
 import os
 import random
 from typing import List, Tuple, Optional, Callable
+import av
 
 import cv2
 import numpy as np
@@ -164,6 +165,30 @@ def _read_frames(video_path: str, frames_per_video: int) -> Optional[np.ndarray]
     return np.stack(frames, axis=0)  # (T, H, W, C)
 
 
+def _read_frames_pyav(video_path: str, frames_per_video: int) -> Optional[np.ndarray]:
+    container = av.open(video_path)
+    container.streams.video[0].thread_type = "SLICE"
+    total_frames = container.streams.video[0].frames
+    framerate = container.streams.video[0].average_rate
+    time_base = container.streams.video[0].time_base
+
+    start_frame = random.randint(total_frames - frames_per_video - 1, total_frames)
+    indices = list(range(start_frame, start_frame + frames_per_video + 1))
+
+    sec = int(start_frame / framerate)
+    container.seek(int(sec / time_base))
+
+    frames = [] 
+
+    for frame in container.decode(video=0):
+        frame = frame.to_ndarray(format='bgr24')
+        frames.append(frame)
+
+    frames = np.array(frames)
+
+    return frames
+
+
 # ── dataset class ─────────────────────────────────────────────────────────────
 
 class CelebDFDataset(Dataset):
@@ -225,7 +250,7 @@ class CelebDFDataset(Dataset):
     def __getitem__(self, idx: int) -> Tuple[Tensor, Tensor, Tensor]:
         video_path, label = self.entries[idx]
 
-        frames = _read_frames(video_path, self.frames_per_video)
+        frames = _read_frames_pyav(video_path, self.frames_per_video)
 
         # ── build attention mask ──────────────────────────────────────────────
         # _read_frames always returns exactly frames_per_video frames (padding
