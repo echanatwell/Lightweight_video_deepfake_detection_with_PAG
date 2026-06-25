@@ -166,6 +166,7 @@ class FrequencyAwareMAE(nn.Module):
         # highpass
         blur_kernel: int = 5,
         blur_sigma: float = 1.0,
+        add_decoder_projection = False
     ):
         super().__init__()
 
@@ -204,7 +205,10 @@ class FrequencyAwareMAE(nn.Module):
 
         # ---- Decoder ----
         # Project encoder output to decoder dimension
-        self.decoder_proj = nn.Linear(d_model, d_dec)
+        if add_decoder_projection:
+            self.decoder_proj = nn.Linear(d_model, d_dec)
+        else:
+            self.decoder_proj = None
         # Learnable mask token (replaces masked positions in decoder input)
         self.mask_token = nn.Parameter(torch.zeros(1, 1, d_dec))
         nn.init.normal_(self.mask_token, std=0.02)
@@ -374,7 +378,10 @@ class FrequencyAwareMAE(nn.Module):
         N_mask = N - N_vis
 
         # Project encoder output to decoder dim
-        vis_tokens = self.decoder_proj(encoded_vis)  # (B, N_vis, d_dec)
+        if self.decoder_proj is not None:
+            vis_tokens = self.decoder_proj(encoded_vis)  # (B, N_vis, d_dec)
+        else:
+            vis_tokens = encoded_vis
 
         # Expand mask token
         mask_tokens = self.mask_token.expand(B, N_mask, -1)  # (B, N_mask, d_dec)
@@ -485,3 +492,129 @@ class FrequencyAwareMAE(nn.Module):
     @property
     def device(self):
         return next(self.parameters()).device
+
+
+# ---------------------------------------------------------------------------
+# Classifier built on top of the pretrained MAE encoder
+# ---------------------------------------------------------------------------
+
+class MAEClassifier(nn.Module):
+    """
+    Wraps the encoder part of FrequencyAwareMAE and adds:
+      - sequence pooling (attention-weighted, same as Model in model.py)
+      - classification head (Linear -> BN -> LeakyReLU -> Dropout -> Linear)
+
+    Interface is compatible with the custom Model class in model.py:
+        forward(x, attention_mask=None) -> logits (B, num_classes)
+    """
+
+    def __init__(
+        self,
+        mae: FrequencyAwareMAE,
+        num_classes: int = 2,
+        freeze_encoder: bool = False,
+    ):
+        super().__init__()
+
+        d_model = mae.d_model
+
+        # Encoder components (shared reference — no copy)
+        self.patch_embedding = mae.patch_embedding
+        self.positional_encoding = mae.positional_encoding
+        self.encoder_layers = mae.encoder_layers
+        self.encoder_norm = mae.encoder_norm
+
+        # Sequence pooling weight (same design as Model.seq_pool_weight)
+        self.seq_pool_weight = nn.Linear(d_model, 1)
+
+        # Classification head (same design as Model.classification_head)
+        self.classification_head = nn.Sequential(
+            nn.Linear(d_model, 64),
+            nn.BatchNorm1d(64),
+            nn.LeakyReLU(0.01),
+            nn.Dropout(p=0.1),
+            nn.Linear(64, num_classes),
+        )
+
+        if freeze_encoder:
+            for p in self.encoder_layers.parameters():
+                p.requires_grad_(False)
+            for p in self.patch_embedding.parameters():
+                p.requires_grad_(False)
+            for p in self.positional_encoding.parameters():
+                p.requires_grad_(False)
+
+    def sequence_pooling(self, seq: torch.Tensor, attention_mask=None) -> torch.Tensor:
+        weights = self.seq_pool_weight(seq).permute(0, 2, 1)  # (B, 1, N)
+        if attention_mask is not None:
+            weights = weights.masked_fill(attention_mask.unsqueeze(1) == 0, -1e9)
+        weights = weights.softmax(dim=-1)
+        return (weights @ seq).squeeze(1)  # (B, d_model)
+
+    def forward(self, x: torch.Tensor, attention_mask=None) -> torch.Tensor:
+        """
+        Args:
+            x:              (B, C, T, H, W) video frames in [-1, 1]
+            attention_mask: (B, T) optional — not used in current encoder,
+                            kept for API compatibility with train.py / train_mvit.py
+
+        Returns:
+            logits: (B, num_classes)
+        """
+
+        patches, grids = patchify(x, patch_size=16)  # (B, N, 768)
+        hidden = self.patch_embedding(patches)         # (B, N, d_model)
+
+        hidden, cu_seqlens, position_embeddings = self.positional_encoding(hidden, grids)
+
+        for layer in self.encoder_layers:
+            hidden = layer(hidden, cu_seqlens, None, position_embeddings)
+        hidden = self.encoder_norm(hidden)             # (B, N, d_model)
+
+        pooled = self.sequence_pooling(hidden)         # (B, d_model)
+        return self.classification_head(pooled)        # (B, num_classes)
+
+    @property
+    def device(self):
+        return next(self.parameters()).device
+
+
+# ---------------------------------------------------------------------------
+# Checkpoint loading
+# ---------------------------------------------------------------------------
+
+def load_mae_classifier(checkpoint_path: str, num_classes: int = 2) -> MAEClassifier:
+    """
+    Load a pretrained MAE encoder checkpoint and wrap it in MAEClassifier.
+
+    The checkpoint is produced by pretrain_mae.py and contains:
+        {
+            'encoder_state_dict': {...},
+            'hparams': {encoder_depth, d_model, num_heads, patch_size, ...},
+            'epoch': int,
+            'loss': float,
+        }
+    """
+    ckpt = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+    hparams = ckpt['hparams']
+
+    # Reconstruct the full MAE model with the same encoder architecture
+    mae = FrequencyAwareMAE(
+        encoder_depth=hparams['encoder_depth'],
+        d_model=hparams['d_model'],
+        num_heads=hparams['num_heads'],
+        patch_size=hparams.get('patch_size', 16),
+        max_frames=hparams.get('max_frames', 16),
+        img_size=hparams.get('img_size', 224),
+    )
+
+    # Load only encoder weights (decoder weights are discarded)
+    missing, unexpected = mae.load_state_dict(ckpt['encoder_state_dict'], strict=False)
+    print(f'Loaded encoder from {checkpoint_path} (epoch {ckpt["epoch"]}, loss {ckpt["loss"]:.6f})')
+    if missing:
+        print(f'  Missing keys (decoder — expected): {len(missing)}')
+    if unexpected:
+        print(f'  Unexpected keys: {unexpected}')
+
+    classifier = MAEClassifier(mae, num_classes=num_classes)
+    return classifier
