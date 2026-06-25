@@ -165,8 +165,7 @@ class FrequencyAwareMAE(nn.Module):
         img_size: int = 224,
         # highpass
         blur_kernel: int = 5,
-        blur_sigma: float = 1.0,
-        add_decoder_projection = False
+        blur_sigma: float = 1.0
     ):
         super().__init__()
 
@@ -205,10 +204,7 @@ class FrequencyAwareMAE(nn.Module):
 
         # ---- Decoder ----
         # Project encoder output to decoder dimension
-        if add_decoder_projection:
-            self.decoder_proj = nn.Linear(d_model, d_dec)
-        else:
-            self.decoder_proj = None
+        self.decoder_proj = nn.Linear(d_model, d_dec)
         # Learnable mask token (replaces masked positions in decoder input)
         self.mask_token = nn.Parameter(torch.zeros(1, 1, d_dec))
         nn.init.normal_(self.mask_token, std=0.02)
