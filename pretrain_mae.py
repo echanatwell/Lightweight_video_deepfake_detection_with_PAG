@@ -7,6 +7,7 @@ for use in finetune_mae.py.
 """
 
 import os
+import logging
 import argparse
 import shutil
 
@@ -55,19 +56,46 @@ DECODER_NUM_HEADS = 4
 BLUR_KERNEL = 5
 BLUR_SIGMA = 1.0
 
-OUTPUT_DIR = "/scratch/users/k25137033/interpretability/Lightweight_video_deepfake_detection_with_PAG"
-EXP_NAME = "MAE_CelebDF_FFPP_FreqAware_rgbtarget"
+OUTPUT_DIR = "pretrain_checkpoints"
+EXP_NAME = "MAE_CelebDF_FFPP_FreqAware"
 CHECKPOINT_PATH = os.path.join(OUTPUT_DIR, EXP_NAME, "encoder.pth")
 FULL_CHECKPOINT_PATH = os.path.join(OUTPUT_DIR, EXP_NAME, "full.pth")
+LOG_PATH = os.path.join("logs", f"{EXP_NAME}.log")
 
-if os.path.exists(os.path.join(OUTPUT_DIR, EXP_NAME)):
-    shutil.rmtree(os.path.join(OUTPUT_DIR, EXP_NAME))
-os.mkdir(os.path.join(OUTPUT_DIR, EXP_NAME))
+os.makedirs(os.path.join(OUTPUT_DIR, EXP_NAME), exist_ok=True)
 
 # Named function instead of lambda to support multiprocessing pickling on Windows
 def normalize_neg1_to_1(x):
     """Scale tensor from [0, 1] to [-1, 1]."""
     return x * 2 - 1
+
+
+def setup_logger(log_path: str) -> logging.Logger:
+    """Configure and return a logger that writes to both console and a log file."""
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
+
+    logger = logging.getLogger("pretrain_mae")
+    logger.setLevel(logging.DEBUG)
+
+    formatter = logging.Formatter(
+        fmt="%(asctime)s | %(levelname)-8s | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+    # Console handler — INFO and above
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(formatter)
+
+    # File handler — DEBUG and above (captures everything)
+    file_handler = logging.FileHandler(log_path, mode="a", encoding="utf-8")
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(formatter)
+
+    logger.addHandler(console_handler)
+    logger.addHandler(file_handler)
+
+    return logger
 
 
 # ---------------------------------------------------------------------------
@@ -82,6 +110,18 @@ if __name__ == '__main__':
     FRAMES_PER_VIDEO = args.frames_per_video
     IMG_SIZE = args.img_size
     GRADIENT_ACCUMULATION_STEPS = args.gradient_accumulation_steps
+
+    logger = setup_logger(LOG_PATH)
+    logger.info("=" * 70)
+    logger.info(f"Starting experiment: {EXP_NAME}")
+    logger.info(
+        f"Hyperparameters: EPOCHS={EPOCHS}, LR_0={LR_0}, LR_N={LR_N}, "
+        f"BATCH_SIZE={BATCH_SIZE}, MASK_RATIO={MASK_RATIO}, "
+        f"ENCODER_DEPTH={ENCODER_DEPTH}, D_MODEL={D_MODEL}, NUM_HEADS={NUM_HEADS}, "
+        f"DECODER_DEPTH={DECODER_DEPTH}, D_DEC={D_DEC}, "
+        f"GRADIENT_ACCUMULATION_STEPS={GRADIENT_ACCUMULATION_STEPS}"
+    )
+    logger.info("=" * 70)
 
     train_loss_history = list()
 
@@ -106,16 +146,20 @@ if __name__ == '__main__':
         p.numel() for name, p in model.named_parameters()
         if any(k in name for k in ('patch_embedding', 'positional_encoding', 'encoder_layers', 'encoder_norm'))
     )
-    print(f'Total params: {total_params:,}')
-    print(f'Encoder params: {encoder_params:,}')
-    print(f'Decoder params: {total_params - encoder_params:,}')
+    # print(f'Total params: {total_params:,}')
+    # print(f'Encoder params: {encoder_params:,}')
+    # print(f'Decoder params: {total_params - encoder_params:,}')
+    logger.info(f"Total params:   {total_params:,}")
+    logger.info(f"Encoder params: {encoder_params:,}")
+    logger.info(f"Decoder params: {total_params - encoder_params:,}")
+
 
     # Transforms: same as train.py custom transforms (no MViT-specific normalization)
     # Input is normalized to [-1, 1] as expected by the model
     train_transforms = T.Compose([
         T.Resize((IMG_SIZE, IMG_SIZE), T.InterpolationMode.BICUBIC),
         T.RandomHorizontalFlip(p=0.5),
-        T.RandomApply([T.ColorJitter(brightness=0.15, hue=0.1, saturation=0.15)], p=0.5),
+        # T.RandomApply([T.ColorJitter(brightness=0.15, hue=0.1, saturation=0.15)], p=0.5),
         T.RandomApply([T.JPEG((60, 100))], p=0.3),
         T.ToDtype(torch.float32, scale=True),
         T.Lambda(normalize_neg1_to_1),  # [0,1] -> [-1,1]
@@ -153,7 +197,7 @@ if __name__ == '__main__':
 
     # Linear warmup (5% of total steps) + cosine decay
     total_steps = len(train_loader) * EPOCHS // GRADIENT_ACCUMULATION_STEPS
-    warmup_steps = int(total_steps * 0.05)
+    warmup_steps = min(int(total_steps * 0.05), 1000)
     regular_steps = total_steps - warmup_steps
 
     warmup_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, 0.01, 1.0, total_iters=warmup_steps)
@@ -171,7 +215,8 @@ if __name__ == '__main__':
     iterator = iter(train_loader)
     for _ in range(5):
         next(iterator)
-    print(f'[TEST] Fetched 5 batches in {round(time.time() - start, 4)} seconds')
+    # print(f'[TEST] Fetched 5 batches in {round(time.time() - start, 4)} seconds')
+    logger.info(f"[TEST] Fetched 5 batches in {round(time.time() - start, 4)} seconds")
 
     best_loss = float('inf')
 
@@ -211,22 +256,36 @@ if __name__ == '__main__':
                 optimizer.zero_grad()
 
             if step % 50 == 49:
-                print(
-                    f'step: {step}, '
-                    f'loss smoothed: {round(sum(epoch_loss_history[-100:]) / min(100, step + 1), 6)}, '
-                    f'grad_norm smoothed: {round(sum(epoch_grad_norm_history[-100:]) / min(100, step + 1), 4)}, '
-                    f'lr: {"{:0.2e}".format(lr_scheduler.get_last_lr()[0])}'
+                # print(
+                #     f'step: {step}, '
+                #     f'loss smoothed: {round(sum(epoch_loss_history[-100:]) / min(100, step + 1), 6)}, '
+                #     f'grad_norm smoothed: {round(sum(epoch_grad_norm_history[-100:]) / min(100, step + 1), 4)}, '
+                #     f'lr: {"{:0.2e}".format(lr_scheduler.get_last_lr()[0])}'
+                # )
+                logger.info(
+                    f"step: {step}, "
+                    f"loss smoothed: {round(sum(epoch_loss_history[-100:]) / min(100, step + 1), 6)}, "
+                    f"grad_norm smoothed: {round(sum(epoch_grad_norm_history[-100:]) / min(100, step + 1), 4)}, "
+                    f"lr: {'{:0.2e}'.format(lr_scheduler.get_last_lr()[0])}"
                 )
+
 
         avg_loss = train_loss / len(train_loader)
         train_loss_history.append(avg_loss)
 
-        print(
-            f'Epoch {epoch + 1}/{EPOCHS}, '
-            f'epoch time: {round(time.time() - start, 2)}s, '
-            f'train loss: {round(avg_loss, 6)}, '
-            f'lr: {"{:0.2e}".format(lr_scheduler.get_last_lr()[0])}'
+        # print(
+        #     f'Epoch {epoch + 1}/{EPOCHS}, '
+        #     f'epoch time: {round(time.time() - start, 2)}s, '
+        #     f'train loss: {round(avg_loss, 6)}, '
+        #     f'lr: {"{:0.2e}".format(lr_scheduler.get_last_lr()[0])}'
+        # )
+        logger.info(
+            f"Epoch {epoch + 1}/{EPOCHS} | "
+            f"time: {round(time.time() - start, 2)}s | "
+            f"train loss: {round(avg_loss, 6)} | "
+            f"lr: {'{:0.2e}'.format(lr_scheduler.get_last_lr()[0])}"
         )
+
 
         # Save best encoder checkpoint
         if avg_loss < best_loss:
@@ -253,16 +312,19 @@ if __name__ == '__main__':
                 },
                 CHECKPOINT_PATH,
             )
-            print(f'  -> Saved best encoder checkpoint (loss={round(best_loss, 6)})')
+            # print(f'  -> Saved best encoder checkpoint (loss={round(best_loss, 6)})')
+            logger.info(f"  -> Saved best encoder checkpoint (loss={round(best_loss, 6)}) to {CHECKPOINT_PATH}")
 
         # Save full model checkpoint every 50 epochs
         if (epoch + 1) % 50 == 0:
             torch.save(model.state_dict(), os.path.join(OUTPUT_DIR, EXP_NAME, f'epoch{epoch + 1}.pth'))
-            print(f'  -> Saved full checkpoint at epoch {epoch + 1}')
+            # print(f'  -> Saved full checkpoint at epoch {epoch + 1}')
+            logger.info(f"  -> Saved full checkpoint at epoch {epoch + 1}")
 
     # Save final full model
     torch.save(model.state_dict(), FULL_CHECKPOINT_PATH)
-    print(f'Saved final full model to {FULL_CHECKPOINT_PATH}')
+    # print(f'Saved final full model to {FULL_CHECKPOINT_PATH}')
+    logger.info(f"Saved final full model to {FULL_CHECKPOINT_PATH}")
 
     # Plot training curves
     smoothing_ksize = 100
@@ -282,7 +344,8 @@ if __name__ == '__main__':
     axes[2].set_title("Grad Norm / step")
 
     fig.savefig(os.path.join(OUTPUT_DIR, EXP_NAME, 'training_curves.png'))
-    print(f'Saved training curves to training_curves.png')
+    # print(f'Saved training curves to training_curves.png')
+    logger.info(f"Saved training curves to {EXP_NAME}_training_curves.png")
 
     # Epoch-level loss curve
     fig2, ax2 = plt.subplots(figsize=(8, 4))
@@ -291,4 +354,7 @@ if __name__ == '__main__':
     ax2.set_ylabel('MSE Loss')
     ax2.set_title('Frequency-Aware MAE Pretraining Loss')
     fig2.savefig(os.path.join(OUTPUT_DIR, EXP_NAME, 'epoch_loss.png'))
-    print(f'Saved epoch loss curve to epoch_loss.png')
+    # print(f'Saved epoch loss curve to epoch_loss.png')
+    logger.info(f"Saved epoch loss curve to {EXP_NAME}_epoch_loss.png")
+    logger.info("Training complete.")
+

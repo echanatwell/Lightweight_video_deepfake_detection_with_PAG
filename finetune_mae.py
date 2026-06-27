@@ -13,6 +13,7 @@ import argparse
 import torch
 from torch import nn
 from torch.utils.data import DataLoader
+from torch.utils.data import WeightedRandomSampler
 from torchmetrics import F1Score
 from torchvision.transforms import v2 as T
 
@@ -175,7 +176,7 @@ if __name__ == '__main__':
     args = parse_args()
 
     DEVICE = 'cuda:0'
-    EPOCHS = 5
+    EPOCHS = 15
     LR_0 = 0.0003
     LR_N = 0.00001
     BATCH_SIZE = 12
@@ -203,13 +204,13 @@ if __name__ == '__main__':
 
     train_transforms = T.Compose([
         T.Resize((IMG_SIZE, IMG_SIZE), T.InterpolationMode.BICUBIC),
-        T.RandomChoice([
-            T.GaussianBlur(3),
-            T.ColorJitter(brightness=0.15, hue=0.1, saturation=0.15),
-        ]),
+        # T.RandomChoice([
+        #     T.GaussianBlur(3),
+        #     T.ColorJitter(brightness=0.15, hue=0.1, saturation=0.15),
+        # ]),
         T.RandomHorizontalFlip(p=0.5),
-        T.RandomApply([T.JPEG((60, 100))], p=0.5),
-        T.RandomChannelPermutation(),
+        T.RandomApply([T.JPEG((60, 100))], p=0.3),
+        # T.RandomChannelPermutation(),
         T.ToDtype(torch.float32, scale=True),
         T.Lambda(normalize_neg1_to_1),
     ])
@@ -272,20 +273,26 @@ if __name__ == '__main__':
     #     pin_memory=True,
     # )
 
-    train_loader = DataLoader(train_dataset, BATCH_SIZE, shuffle=True, num_workers=2, drop_last=True, pin_memory=True)
-    val_loader = DataLoader(val_dataset, BATCH_SIZE, shuffle=False, num_workers=2, drop_last=True, pin_memory=True)
-    test_loader = DataLoader(test_dataset, BATCH_SIZE, shuffle=False, num_workers=2, drop_last=True)
-
-    # ---- Optimizer & scheduler (identical to Exp 4 / train_mvit.py) ----
-    # Считаем веса обратно пропорционально частоте классов
+    # weights inversely proportional to the class frequency
     n_real = sum(1 for _, lbl in train_dataset.celebdf_dataset.entries if lbl == 0) + \
         sum(1 for _, lbl in train_dataset.ff_dataset.entries if lbl == 0)
     n_fake = sum(1 for _, lbl in train_dataset.celebdf_dataset.entries if lbl == 1) + \
         sum(1 for _, lbl in train_dataset.ff_dataset.entries if lbl == 1)
     n_total = n_real + n_fake
+
     class_weights = torch.tensor([n_total / (2 * n_real), n_total / (2 * n_fake)], device=DEVICE) # sklearn compute_class_weight
+    sample_weights = [1. / n_real, 1. / n_fake]
+    sampler = WeightedRandomSampler(sample_weights, num_samples=len(sample_weights), replacement=True)
+
+
+    train_loader = DataLoader(train_dataset, BATCH_SIZE, sampler=sampler, shuffle=False, num_workers=2, drop_last=True, pin_memory=True) # shuffle=False due to sampler
+    val_loader = DataLoader(val_dataset, BATCH_SIZE, sampler=sampler, shuffle=False, num_workers=2, drop_last=True, pin_memory=True)
+    test_loader = DataLoader(test_dataset, BATCH_SIZE, shuffle=False, num_workers=2, drop_last=True)
+
+    # ---- Optimizer & scheduler (identical to Exp 4 / train_mvit.py) ----
     criterion = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=0.05)
     # criterion = nn.CrossEntropyLoss(label_smoothing=0.05)
+
 
     f1_score_fn = F1Score(task="multiclass", num_classes=NUM_CLASSES).to(DEVICE)
 
