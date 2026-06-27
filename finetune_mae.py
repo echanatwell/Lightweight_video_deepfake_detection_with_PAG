@@ -8,8 +8,9 @@ hyperparameters (5 epochs, LR 0.0003->0.00001, batch 12, grad accum 4).
 Usage:
     python finetune_mae.py --checkpoint MAE_CelebDF_FreqAware_encoder.pth
 """
-
+import os
 import argparse
+import shutil
 import torch
 from torch import nn
 from torch.utils.data import DataLoader
@@ -24,147 +25,28 @@ import matplotlib.pyplot as plt
 
 from datasets.celebdf import CelebDFDataset
 from datasets.combined_dataset import CombinedVideoDataset
-from model.mae_model import FrequencyAwareMAE
-from model.mae_model import patchify
+from model.mae_model import FrequencyAwareMAE, patchify, MAEClassifier, load_mae_classifier
 
-# ---------------------------------------------------------------------------
-# Classifier built on top of the pretrained MAE encoder
-# ---------------------------------------------------------------------------
-
-class MAEClassifier(nn.Module):
-    """
-    Wraps the encoder part of FrequencyAwareMAE and adds:
-      - sequence pooling (attention-weighted, same as Model in model.py)
-      - classification head (Linear -> BN -> LeakyReLU -> Dropout -> Linear)
-
-    Interface is compatible with the custom Model class in model.py:
-        forward(x, attention_mask=None) -> logits (B, num_classes)
-    """
-
-    def __init__(
-        self,
-        mae: FrequencyAwareMAE,
-        num_classes: int = 2,
-        freeze_encoder: bool = False,
-    ):
-        super().__init__()
-
-        d_model = mae.d_model
-
-        # Encoder components (shared reference — no copy)
-        self.patch_embedding = mae.patch_embedding
-        self.positional_encoding = mae.positional_encoding
-        self.encoder_layers = mae.encoder_layers
-        self.encoder_norm = mae.encoder_norm
-
-        # Sequence pooling weight (same design as Model.seq_pool_weight)
-        self.seq_pool_weight = nn.Linear(d_model, 1)
-
-        # Classification head (same design as Model.classification_head)
-        self.classification_head = nn.Sequential(
-            nn.Linear(d_model, 64),
-            nn.BatchNorm1d(64),
-            nn.LeakyReLU(0.01),
-            nn.Dropout(p=0.1),
-            nn.Linear(64, num_classes),
-        )
-
-        if freeze_encoder:
-            for p in self.encoder_layers.parameters():
-                p.requires_grad_(False)
-            for p in self.patch_embedding.parameters():
-                p.requires_grad_(False)
-            for p in self.positional_encoding.parameters():
-                p.requires_grad_(False)
-
-    def sequence_pooling(self, seq: torch.Tensor, attention_mask=None) -> torch.Tensor:
-        weights = self.seq_pool_weight(seq).permute(0, 2, 1)  # (B, 1, N)
-        if attention_mask is not None:
-            weights = weights.masked_fill(attention_mask.unsqueeze(1) == 0, -1e9)
-        weights = weights.softmax(dim=-1)
-        return (weights @ seq).squeeze(1)  # (B, d_model)
-
-    def forward(self, x: torch.Tensor, attention_mask=None) -> torch.Tensor:
-        """
-        Args:
-            x:              (B, C, T, H, W) video frames in [-1, 1]
-            attention_mask: (B, T) optional — not used in current encoder,
-                            kept for API compatibility with train.py / train_mvit.py
-
-        Returns:
-            logits: (B, num_classes)
-        """
-
-        patches, grids = patchify(x, patch_size=16)  # (B, N, 768)
-        hidden = self.patch_embedding(patches)         # (B, N, d_model)
-
-        hidden, cu_seqlens, position_embeddings = self.positional_encoding(hidden, grids)
-
-        for layer in self.encoder_layers:
-            hidden = layer(hidden, cu_seqlens, None, position_embeddings)
-        hidden = self.encoder_norm(hidden)             # (B, N, d_model)
-
-        pooled = self.sequence_pooling(hidden)         # (B, d_model)
-        return self.classification_head(pooled)        # (B, num_classes)
-
-    @property
-    def device(self):
-        return next(self.parameters()).device
-
-
-# ---------------------------------------------------------------------------
-# Checkpoint loading
-# ---------------------------------------------------------------------------
-
-def load_mae_classifier(checkpoint_path: str, num_classes: int = 2) -> MAEClassifier:
-    """
-    Load a pretrained MAE encoder checkpoint and wrap it in MAEClassifier.
-
-    The checkpoint is produced by pretrain_mae.py and contains:
-        {
-            'encoder_state_dict': {...},
-            'hparams': {encoder_depth, d_model, num_heads, patch_size, ...},
-            'epoch': int,
-            'loss': float,
-        }
-    """
-    ckpt = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
-    hparams = ckpt['hparams']
-
-    # Reconstruct the full MAE model with the same encoder architecture
-    mae = FrequencyAwareMAE(
-        encoder_depth=hparams['encoder_depth'],
-        d_model=hparams['d_model'],
-        num_heads=hparams['num_heads'],
-        patch_size=hparams.get('patch_size', 16),
-        max_frames=hparams.get('max_frames', 16),
-        img_size=hparams.get('img_size', 224),
-    )
-
-    # Load only encoder weights (decoder weights are discarded)
-    missing, unexpected = mae.load_state_dict(ckpt['encoder_state_dict'], strict=False)
-    print(f'Loaded encoder from {checkpoint_path} (epoch {ckpt["epoch"]}, loss {ckpt["loss"]:.6f})')
-    if missing:
-        print(f'  Missing keys (decoder — expected): {len(missing)}')
-    if unexpected:
-        print(f'  Unexpected keys: {unexpected}')
-
-    classifier = MAEClassifier(mae, num_classes=num_classes)
-    return classifier
-
-
-# ---------------------------------------------------------------------------
-# Main finetuning script
-# ---------------------------------------------------------------------------
 
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         '--checkpoint',
         type=str,
-        default='MAE_CelebDF_FreqAware_encoder.pth',
+        default='./experiments/MAE_CelebDF_FFPP_FreqAware_rgbtarget/encoder.pth',
         help='Path to encoder checkpoint produced by pretrain_mae.py',
     )
+    parser.add_argument('--epochs', type=int, default=15)
+    parser.add_argument('--batch-size', type=int, default=8)
+    parser.add_argument('--frames-per-video', type=int, default=16)
+    parser.add_argument('--img-size', type=int, default=224)
+    parser.add_argument('--gradient-accumulation-steps', type=int, default=2)
+
+    parser.add_argument('--lr0', type=float, default=0.0003)
+    parser.add_argument('--lrN', type=float, default=0.00001)
+
+    parser.add_argument('--exp-name', type=str, default="MAE_pt_CDF_FFPP_ft_CDF_FPP_clsw_rgbtarget")
+    parser.add_argument('--output-dir', type=str, default='experiments')
     return parser.parse_args()
 
 # Named function instead of lambda to support multiprocessing pickling on Windows
@@ -176,16 +58,24 @@ if __name__ == '__main__':
     args = parse_args()
 
     DEVICE = 'cuda:0'
-    EPOCHS = 15
-    LR_0 = 0.0003
-    LR_N = 0.00001
-    BATCH_SIZE = 12
-    MAX_FRAMES_PER_VIDEO = 16
-    NUM_CLASSES = 2
-    IMG_SIZE = 224
-    GRADIENT_ACCUMULATION_STEPS = 2
+    EPOCHS = args.epochs
+    LR_0 = args.lr0
+    LR_N = args.lrN
+    BATCH_SIZE = args.batch_size
+    FRAMES_PER_VIDEO = args.frames_per_video
 
-    EXP_NAME = "MAE_pt_CDF_FFPP_ft_CDF_FPP_clsw_rgbtarget"
+    NUM_CLASSES = 2
+    IMG_SIZE = args.img_size
+    GRADIENT_ACCUMULATION_STEPS = args.gradient_accumulation_steps
+
+    EXP_NAME = args.exp_name
+    OUTPUT_DIR = args.output_dir
+    CHECKPOINT_PATH = os.path.join(OUTPUT_DIR, EXP_NAME, "encoder.pth")
+    FULL_CHECKPOINT_PATH = os.path.join(OUTPUT_DIR, EXP_NAME, "full.pth")
+
+    if os.path.exists(os.path.join(OUTPUT_DIR, EXP_NAME)):
+        shutil.rmtree(os.path.join(OUTPUT_DIR, EXP_NAME))
+    os.mkdir(os.path.join(OUTPUT_DIR, EXP_NAME))
 
     train_loss_history = list()
     val_loss_history = list()
@@ -199,9 +89,8 @@ if __name__ == '__main__':
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f'Total params: {total_params:,}, trainable: {trainable_params:,}')
 
-    # ---- Transforms (same as train.py — no MViT-specific normalization) ----
+    # ---- Transforms ----
    
-
     train_transforms = T.Compose([
         T.Resize((IMG_SIZE, IMG_SIZE), T.InterpolationMode.BICUBIC),
         # T.RandomChoice([
@@ -221,22 +110,6 @@ if __name__ == '__main__':
         T.Lambda(normalize_neg1_to_1),
     ])
 
-    # ---- Dataset ----
-    # dataset_path = '../datasets/Celeb-DF-v2'
-
-    # train_dataset = CelebDFDataset(
-    #     dataset_path=dataset_path, transforms=train_transforms,
-    #     frames_per_video=MAX_FRAMES_PER_VIDEO, split='train',
-    # )
-    # val_dataset = CelebDFDataset(
-    #     dataset_path=dataset_path, transforms=test_transforms,
-    #     frames_per_video=MAX_FRAMES_PER_VIDEO, split='validation',
-    # )
-    # test_dataset = CelebDFDataset(
-    #     dataset_path=dataset_path, transforms=test_transforms,
-    #     frames_per_video=MAX_FRAMES_PER_VIDEO, split='test',
-    # )
-
     celebdf_path = '../datasets/Celeb-DF-v2'
     ffpp_path = '../datasets/ffpp'
     
@@ -244,7 +117,7 @@ if __name__ == '__main__':
         celebdf_path=celebdf_path,
         ff_path=ffpp_path,
         transforms=train_transforms,
-        frames_per_video=MAX_FRAMES_PER_VIDEO,
+        frames_per_video=FRAMES_PER_VIDEO,
         split='train',
     )
 
@@ -252,7 +125,7 @@ if __name__ == '__main__':
         celebdf_path=celebdf_path,
         ff_path=ffpp_path,
         transforms=test_transforms,
-        frames_per_video=MAX_FRAMES_PER_VIDEO,
+        frames_per_video=FRAMES_PER_VIDEO,
         split='validation',
     )
 
@@ -260,7 +133,7 @@ if __name__ == '__main__':
         celebdf_path=celebdf_path,
         ff_path=ffpp_path,
         transforms=test_transforms,
-        frames_per_video=MAX_FRAMES_PER_VIDEO,
+        frames_per_video=FRAMES_PER_VIDEO,
         split='test',
     )
 
@@ -320,7 +193,7 @@ if __name__ == '__main__':
 
     best_f1 = -1
 
-    # ---- Training loop (identical structure to train_mvit.py) ----
+    # ---- Training loop ----
     for epoch in range(EPOCHS):
         model.train()
 
@@ -397,7 +270,7 @@ if __name__ == '__main__':
 
         if val_f1_history[-1] > best_f1:
             best_f1 = val_f1_history[-1]
-            torch.save(model.state_dict(), f"./checkpoints/{EXP_NAME}_classifier.pth")
+            torch.save(model.state_dict(), os.path.join(OUTPUT_DIR, EXP_NAME, "classifier.pth"))
 
     # ---- Plots ----
     smoothing_ksize = 100
@@ -415,7 +288,7 @@ if __name__ == '__main__':
     axes[2].plot(step_grad_norms_smoothed, label='grad norms smoothed')
     axes[2].legend()
     axes[2].set_title("Grad Norm / step")
-    fig.savefig(f'{EXP_NAME}_losses_n_grads.png')
+    fig.savefig(os.path.join(OUTPUT_DIR, EXP_NAME, 'losses_n_grads.png'))
 
     # ---- Test evaluation ----
     model.eval()

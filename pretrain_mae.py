@@ -32,10 +32,14 @@ def parse_args():
     parser = argparse.ArgumentParser()
 
     parser.add_argument('--epochs', type=int, default=200)
-    parser.add_argument('--batch_size', type=int, default=8)
-    parser.add_argument('--frames_per_video', type=int, default=16)
-    parser.add_argument('--img_size', type=int, default=224)
-    parser.add_argument('--gradient_accumulation_steps', type=int, default=2)
+    parser.add_argument('--batch-size', type=int, default=8)
+    parser.add_argument('--frames-per-video', type=int, default=16)
+    parser.add_argument('--img-size', type=int, default=224)
+    parser.add_argument('--gradient-accumulation-steps', type=int, default=2)
+
+    parser.add_argument('--mask-ratio', type=float, default=0.75)
+    parser.add_argument('--exp-name', type=str, default="MAE_CelebDF_FFPP_FreqAware_rgbtarget")
+    parser.add_argument('--output-dir', type=str, default='experiments')
 
     return parser.parse_args()
 
@@ -46,7 +50,6 @@ LR_N = 1e-5
 GRADIENT_ACCUMULATION_STEPS = 2
 
 # MAE hyperparameters
-MASK_RATIO = 0.75
 ENCODER_DEPTH = 4
 D_MODEL = 128
 NUM_HEADS = 8
@@ -105,11 +108,21 @@ def setup_logger(log_path: str) -> logging.Logger:
 if __name__ == '__main__':
     args = parse_args()
 
+    EXP_NAME = args.exp_name
+    OUTPUT_DIR = args.output_dir
+    CHECKPOINT_PATH = os.path.join(OUTPUT_DIR, EXP_NAME, "encoder.pth")
+    FULL_CHECKPOINT_PATH = os.path.join(OUTPUT_DIR, EXP_NAME, "full.pth")
+
+    if os.path.exists(os.path.join(OUTPUT_DIR, EXP_NAME)):
+        shutil.rmtree(os.path.join(OUTPUT_DIR, EXP_NAME))
+    os.mkdir(os.path.join(OUTPUT_DIR, EXP_NAME))
+
     EPOCHS = args.epochs
     BATCH_SIZE = args.batch_size
     FRAMES_PER_VIDEO = args.frames_per_video
     IMG_SIZE = args.img_size
     GRADIENT_ACCUMULATION_STEPS = args.gradient_accumulation_steps
+    MASK_RATIO = args.mask_ratio
 
     logger = setup_logger(LOG_PATH)
     logger.info("=" * 70)
@@ -197,7 +210,8 @@ if __name__ == '__main__':
 
     # Linear warmup (5% of total steps) + cosine decay
     total_steps = len(train_loader) * EPOCHS // GRADIENT_ACCUMULATION_STEPS
-    warmup_steps = min(int(total_steps * 0.05), 1000)
+    warmup_steps = min(int(total_steps * 0.05), 200)
+
     regular_steps = total_steps - warmup_steps
 
     warmup_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, 0.01, 1.0, total_iters=warmup_steps)
