@@ -41,7 +41,7 @@ Labels: 0 = real, 1 = fake.
 import os
 import json
 import random
-from typing import List, Tuple, Optional, Callable
+from typing import List, Tuple, Optional, Callable, Literal
 import av
 
 import cv2
@@ -76,44 +76,48 @@ def _collect_ff_videos(
     dataset_path: str,
     compression: str,
     methods: List[str],
-    include_dfd: bool
+    include_dfd: bool, 
+    real_fake_split: Literal['all', 'real_only', 'fake_only'] = 'all'
 ) -> Tuple[List[Tuple[str, int]], List[Tuple[str, int]]]:
     """Collect all FF++ videos and return youtube and DFD entries separately."""
     youtube_entries: List[Tuple[str, int]] = []
     dfd_entries: List[Tuple[str, int]] = []
 
+    assert real_fake_split in ['all', 'real_only', 'fake_only']
+
     # 1. Real videos
     # Youtube real
-    yt_real_dir = os.path.join(dataset_path, "original_sequences", "youtube", compression, "videos")
-    if os.path.isdir(yt_real_dir):
-        for fname in sorted(os.listdir(yt_real_dir)):
-            if fname.lower().endswith(".mp4"):
-                youtube_entries.append((os.path.join(yt_real_dir, fname), 0))
-
-    # DFD real
-    if include_dfd:
-        dfd_real_dir = os.path.join(dataset_path, "original_sequences", "actors", compression, "videos")
-        if os.path.isdir(dfd_real_dir):
-            for fname in sorted(os.listdir(dfd_real_dir)):
+    if real_fake_split in ['all', 'real_only']:
+        yt_real_dir = os.path.join(dataset_path, "original_sequences", "youtube", compression, "videos")
+        if os.path.isdir(yt_real_dir):
+            for fname in sorted(os.listdir(yt_real_dir)):
                 if fname.lower().endswith(".mp4"):
-                    dfd_entries.append((os.path.join(dfd_real_dir, fname), 0))
+                    youtube_entries.append((os.path.join(yt_real_dir, fname), 0))
 
-    # 2. Fake videos
-    # Youtube fake (manipulated methods)
-    for method in methods:
-        method_dir = os.path.join(dataset_path, "manipulated_sequences", method, compression, "videos")
-        if os.path.isdir(method_dir):
-            for fname in sorted(os.listdir(method_dir)):
-                if fname.lower().endswith(".mp4"):
-                    youtube_entries.append((os.path.join(method_dir, fname), 1))
+        # DFD real
+        if include_dfd:
+            dfd_real_dir = os.path.join(dataset_path, "original_sequences", "actors", compression, "videos")
+            if os.path.isdir(dfd_real_dir):
+                for fname in sorted(os.listdir(dfd_real_dir)):
+                    if fname.lower().endswith(".mp4"):
+                        dfd_entries.append((os.path.join(dfd_real_dir, fname), 0))
+    if real_fake_split in ['all', 'fake_only']:
+        # 2. Fake videos
+        # Youtube fake (manipulated methods)
+        for method in methods:
+            method_dir = os.path.join(dataset_path, "manipulated_sequences", method, compression, "videos")
+            if os.path.isdir(method_dir):
+                for fname in sorted(os.listdir(method_dir)):
+                    if fname.lower().endswith(".mp4"):
+                        youtube_entries.append((os.path.join(method_dir, fname), 1))
 
-    # DFD fake
-    if include_dfd:
-        dfd_fake_dir = os.path.join(dataset_path, "manipulated_sequences", "DeepFakeDetection", compression, "videos")
-        if os.path.isdir(dfd_fake_dir):
-            for fname in sorted(os.listdir(dfd_fake_dir)):
-                if fname.lower().endswith(".mp4"):
-                    dfd_entries.append((os.path.join(dfd_fake_dir, fname), 1))
+        # DFD fake
+        if include_dfd:
+            dfd_fake_dir = os.path.join(dataset_path, "manipulated_sequences", "DeepFakeDetection", compression, "videos")
+            if os.path.isdir(dfd_fake_dir):
+                for fname in sorted(os.listdir(dfd_fake_dir)):
+                    if fname.lower().endswith(".mp4"):
+                        dfd_entries.append((os.path.join(dfd_fake_dir, fname), 1))
 
     return youtube_entries, dfd_entries
 
@@ -150,9 +154,10 @@ def _split_ff_dataset(
     compression: str,
     methods: List[str],
     include_dfd: bool,
+    real_fake_split: Literal['all', 'real_only', 'fake_only'] = 'all'
 ) -> List[Tuple[str, int]]:
     """Return the (path, label) list for the requested split."""
-    youtube_entries, dfd_entries = _collect_ff_videos(dataset_path, compression, methods, include_dfd)
+    youtube_entries, dfd_entries = _collect_ff_videos(dataset_path, compression, methods, include_dfd, real_fake_split)
 
     # Split youtube entries
     official_ids = _load_official_split(dataset_path, split)
@@ -214,68 +219,70 @@ def _split_ff_dataset(
     return selected_youtube + selected_dfd
 
 
-def _read_frames(video_path: str, frames_per_video: int) -> Optional[np.ndarray]:
-    """
-    Read `frames_per_video` frames uniformly sampled from the video.
+def _split_videos_into_smaller_segments(video_entries: List[Tuple[str, int]], frames_per_video: int, multiplier: int = 4):
+    #  video entries: list of pair video_path-label
 
-    Returns an ndarray of shape (T, H, W, C) in uint8 RGB, or None on failure.
-    """
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        return None
+    videos_with_segments = list()
 
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    if total_frames <= 0:
-        cap.release()
-        return None
+    for video_path, label in video_entries:
+        total_frames = _get_number_of_frames_pyav(video_path)
+        segment_frames = frames_per_video * multiplier
+        for i in range(total_frames // segment_frames - 1):
+            videos_with_segments.append((video_path, (i * segment_frames, (i + 1) * segment_frames), label))
 
-    # uniform indices, clamped to valid range
-    indices = np.linspace(0, total_frames - 1, frames_per_video, dtype=int)
-
-    frames: List[np.ndarray] = []
-    for idx in indices:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, int(idx))
-        ret, frame = cap.read()
-        if not ret:
-            # fall back to the last successfully read frame (or a black frame)
-            if frames:
-                frames.append(frames[-1].copy())
-            else:
-                h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 224
-                w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))  or 224
-                frames.append(np.zeros((h, w, 3), dtype=np.uint8))
-        else:
-            frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-
-    cap.release()
-    return np.stack(frames, axis=0)  # (T, H, W, C)
+    return videos_with_segments
 
 
-def _read_frames_pyav(video_path: str, frames_per_video: int) -> Optional[np.ndarray]:
+def _get_frame_ranges(video_entries: List[Tuple[str, int]]):
+    #  video entries: list of pair video_path-label
+
+    videos_with_segments = list()
+
+    for video_path, label in video_entries:
+        total_frames = _get_number_of_frames_pyav(video_path)
+
+        if total_frames < 16:
+            print(f'{video_path}: {total_frames}')
+            continue
+
+        videos_with_segments.append((video_path, (0, total_frames), label))
+
+    return videos_with_segments
+
+
+def _get_number_of_frames_pyav(video_path: str):
+    container = av.open(video_path)
+    total_frames = container.streams.video[0].frames
+    container.close()
+
+    return total_frames
+
+
+def _read_frames_pyav(video_path: str, start_frame: int, end_frame: int, frames_per_video: int) -> Optional[np.ndarray]:
     container = av.open(video_path)
     container.streams.video[0].thread_type = "SLICE"
     total_frames = container.streams.video[0].frames
     framerate = container.streams.video[0].average_rate
     time_base = container.streams.video[0].time_base
 
-    start_frame = random.randint(0, max(total_frames - frames_per_video, 0))
-    indices = list(range(start_frame, min(start_frame + frames_per_video + 1, total_frames-1)))
+    indices = sorted(random.sample(range(start_frame, end_frame), frames_per_video))
+    frames = list()
 
-    sec = int(start_frame / framerate)
-    container.seek(int(sec / time_base))
+    for idx in indices:
+        sec = int(idx / framerate)
+        container.seek(int(sec / time_base))
+        frame = next(container.decode(video=0)).to_ndarray(format='bgr24')
 
-    frames = [] 
-
-    c = 0
-    for frame in container.decode(video=0):
-        frame = frame.to_ndarray(format='bgr24')
         frames.append(frame)
-
-        c += 1
-        if c >= frames_per_video:
-            break
+    # for i, frame in enumerate(container.decode(video=0)):
+    #     if i + start_frame not in indices:
+    #         continue
+    #     frame = frame.to_ndarray(format='bgr24')
+    #     frames.append(frame)
 
     frames = np.array(frames)
+
+    container.close()
 
     return frames
 
@@ -323,7 +330,9 @@ class FaceForensicsDataset(Dataset):
         compression: str = "c23",
         methods: Optional[List[str]] = None,
         include_dfd: bool = False,
-        img_size: int = 224
+        img_size: int = 224,
+        real_fake_split: Literal['all', 'real_only', 'fake_only'] = 'all',
+        split_into_smaller_segments_mul: int = -1
     ) -> None:
         super().__init__()
         self.dataset_path     = dataset_path
@@ -334,14 +343,21 @@ class FaceForensicsDataset(Dataset):
         self.methods          = methods or ["Deepfakes", "Face2Face", "FaceSwap", "NeuralTextures"]
         self.include_dfd      = include_dfd
         self.img_size         = img_size
+        self.real_fake_split  = real_fake_split
+        self.split_into_smaller_segments_mul = split_into_smaller_segments_mul
 
         self.entries: List[Tuple[str, int]] = _split_ff_dataset(
             dataset_path=self.dataset_path,
             split=self.split,
             compression=self.compression,
             methods=self.methods,
-            include_dfd=self.include_dfd
+            include_dfd=self.include_dfd,
+            real_fake_split=self.real_fake_split
         )
+        if split_into_smaller_segments_mul > 1:
+            self.entries = _split_videos_into_smaller_segments(self.entries, self.frames_per_video, self.split_into_smaller_segments_mul)
+        else:
+            self.entries = _get_frame_ranges(self.entries)
 
         if len(self.entries) == 0:
             raise RuntimeError(
@@ -355,9 +371,13 @@ class FaceForensicsDataset(Dataset):
         return len(self.entries)
 
     def __getitem__(self, idx: int) -> Tuple[Tensor, Tensor, Tensor]:
-        video_path, label = self.entries[idx]
+        video_path, (start_frame, end_frame), label = self.entries[idx]
 
-        frames = _read_frames_pyav(video_path, self.frames_per_video)
+        if self.split_into_smaller_segments_mul < 2:
+            start_frame = random.randint(start_frame, end_frame - self.frames_per_video)
+            end_frame = min(start_frame + self.frames_per_video * 2, end_frame)
+
+        frames = _read_frames_pyav(video_path, start_frame, end_frame, self.frames_per_video)
 
         # ── build attention mask ──────────────────────────────────────────────
         if frames is not None:
