@@ -9,6 +9,7 @@ Usage:
     python finetune_mae.py --checkpoint MAE_CelebDF_FreqAware_encoder.pth
 """
 import os
+import shutil
 import argparse
 import shutil
 import torch
@@ -33,7 +34,7 @@ def parse_args():
     parser.add_argument(
         '--checkpoint',
         type=str,
-        default='./experiments/MAE_CelebDF_FFPP_FreqAware_rgbtarget/encoder.pth',
+        default=None,
         help='Path to encoder checkpoint produced by pretrain_mae.py',
     )
     parser.add_argument('--epochs', type=int, default=15)
@@ -119,6 +120,8 @@ if __name__ == '__main__':
         transforms=train_transforms,
         frames_per_video=FRAMES_PER_VIDEO,
         split='train',
+        split_into_smaller_segments_mul=-1,
+        supersample_reals=True
     )
 
     val_dataset = CombinedVideoDataset(
@@ -127,6 +130,7 @@ if __name__ == '__main__':
         transforms=test_transforms,
         frames_per_video=FRAMES_PER_VIDEO,
         split='validation',
+        split_into_smaller_segments_mul=-1
     )
 
     test_dataset = CombinedVideoDataset(
@@ -135,6 +139,7 @@ if __name__ == '__main__':
         transforms=test_transforms,
         frames_per_video=FRAMES_PER_VIDEO,
         split='test',
+        split_into_smaller_segments_mul=-1
     )
 
     # train_loader = DataLoader(
@@ -158,9 +163,9 @@ if __name__ == '__main__':
     sampler = WeightedRandomSampler(sample_weights, num_samples=len(sample_weights), replacement=True)
 
 
-    train_loader = DataLoader(train_dataset, BATCH_SIZE, sampler=sampler, shuffle=False, num_workers=2, drop_last=True, pin_memory=True) # shuffle=False due to sampler
-    val_loader = DataLoader(val_dataset, BATCH_SIZE, sampler=sampler, shuffle=False, num_workers=2, drop_last=True, pin_memory=True)
-    test_loader = DataLoader(test_dataset, BATCH_SIZE, shuffle=False, num_workers=2, drop_last=True)
+    train_loader = DataLoader(train_dataset, BATCH_SIZE, sampler=sampler, shuffle=False, num_workers=8, drop_last=True, pin_memory=True) # shuffle=False due to sampler
+    val_loader = DataLoader(val_dataset, BATCH_SIZE, sampler=sampler, shuffle=False, num_workers=4, drop_last=True, pin_memory=True)
+    test_loader = DataLoader(test_dataset, BATCH_SIZE, shuffle=False, num_workers=4, drop_last=True)
 
     # ---- Optimizer & scheduler (identical to Exp 4 / train_mvit.py) ----
     criterion = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=0.05)

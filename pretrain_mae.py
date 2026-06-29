@@ -10,11 +10,14 @@ import os
 import logging
 import argparse
 import shutil
+import sys
+import psutil
 
 import torch
 from torch import nn
 from torch.utils.data import DataLoader
 from torchvision.transforms import v2 as T
+from torchinfo import summary
 
 import numpy as np
 import time
@@ -28,6 +31,12 @@ from model.mae_model import FrequencyAwareMAE
 # Constants (module-level is fine — no side-effects)
 # ---------------------------------------------------------------------------
 
+def print_process_memory():
+    process = psutil.Process(os.getpid())
+    mem_info = process.memory_info()
+    print(f'[TEST] Current memory usage: {mem_info.rss // 1024 // 1024} MB')
+
+
 def parse_args():
     parser = argparse.ArgumentParser()
 
@@ -37,7 +46,15 @@ def parse_args():
     parser.add_argument('--img-size', type=int, default=224)
     parser.add_argument('--gradient-accumulation-steps', type=int, default=2)
 
-    parser.add_argument('--mask-ratio', type=float, default=0.75)
+    parser.add_argument('--encoder-depth', type=int, default=4)
+    parser.add_argument('--d-model', type=int, default=128)
+    parser.add_argument('--num-heads-encoder', type=int, default=8)
+
+    parser.add_argument('--decoder-depth', type=int, default=4)
+    parser.add_argument('--d-decoder', type=int, default=128)
+    parser.add_argument('--num-heads-decoder', type=int, default=8)
+
+    parser.add_argument('--mask-ratio', type=float, default=0.65)
     parser.add_argument('--exp-name', type=str, default="MAE_CelebDF_FFPP_FreqAware_rgbtarget")
     parser.add_argument('--output-dir', type=str, default='experiments')
 
@@ -47,15 +64,7 @@ DEVICE = 'cuda:0'
 LR_0 = 1.5e-4
 LR_N = 1e-5
 
-GRADIENT_ACCUMULATION_STEPS = 2
-
 # MAE hyperparameters
-ENCODER_DEPTH = 4
-D_MODEL = 128
-NUM_HEADS = 8
-DECODER_DEPTH = 2
-D_DEC = 128
-DECODER_NUM_HEADS = 4
 BLUR_KERNEL = 5
 BLUR_SIGMA = 1.0
 
@@ -108,14 +117,18 @@ def setup_logger(log_path: str) -> logging.Logger:
 if __name__ == '__main__':
     args = parse_args()
 
+    print(args)
+
     EXP_NAME = args.exp_name
     OUTPUT_DIR = args.output_dir
     CHECKPOINT_PATH = os.path.join(OUTPUT_DIR, EXP_NAME, "encoder.pth")
     FULL_CHECKPOINT_PATH = os.path.join(OUTPUT_DIR, EXP_NAME, "full.pth")
 
-    if os.path.exists(os.path.join(OUTPUT_DIR, EXP_NAME)):
-        shutil.rmtree(os.path.join(OUTPUT_DIR, EXP_NAME))
-    os.mkdir(os.path.join(OUTPUT_DIR, EXP_NAME))
+    if os.path.exists(os.path.join(OUTPUT_DIR, EXP_NAME)) and not len(os.listdir(os.path.join(OUTPUT_DIR, EXP_NAME))) == 0:
+        # shutil.rmtree(os.path.join(OUTPUT_DIR, EXP_NAME))
+        print(f'WARNING! {os.path.join(OUTPUT_DIR, EXP_NAME)} already exists, stopping')
+        sys.exit(1)
+    os.makedirs(os.path.join(OUTPUT_DIR, EXP_NAME), exist_ok=True)
 
     EPOCHS = args.epochs
     BATCH_SIZE = args.batch_size
@@ -123,6 +136,14 @@ if __name__ == '__main__':
     IMG_SIZE = args.img_size
     GRADIENT_ACCUMULATION_STEPS = args.gradient_accumulation_steps
     MASK_RATIO = args.mask_ratio
+    
+
+    ENCODER_DEPTH = args.encoder_depth
+    D_MODEL = args.d_model
+    NUM_HEADS = args.num_heads_encoder
+    DECODER_DEPTH = args.decoder_depth
+    D_DEC = args.d_decoder
+    DECODER_NUM_HEADS = args.num_heads_decoder
 
     logger = setup_logger(LOG_PATH)
     logger.info("=" * 70)
@@ -153,6 +174,8 @@ if __name__ == '__main__':
         blur_sigma=BLUR_SIGMA,
     ).to(DEVICE)
 
+    summary(model, input_size=(BATCH_SIZE, 3, FRAMES_PER_VIDEO, IMG_SIZE, IMG_SIZE))
+
     # Count parameters
     total_params = sum(p.numel() for p in model.parameters())
     encoder_params = sum(
@@ -181,20 +204,14 @@ if __name__ == '__main__':
     celebdf_path = '../datasets/Celeb-DF-v2'
     ffpp_path = '../datasets/ffpp'
 
-    # Labels are loaded but not used — CelebDFDataset returns (x, attention_mask, y)
-    # train_dataset = CelebDFDataset(
-    #     dataset_path=dataset_path,
-    #     transforms=train_transforms,
-    #     frames_per_video=FRAMES_PER_VIDEO,
-    #     split='train',
-    # )
-
     train_dataset = CombinedVideoDataset(
         celebdf_path=celebdf_path,
         ff_path=ffpp_path,
         transforms=train_transforms,
         frames_per_video=FRAMES_PER_VIDEO,
         split='train',
+        real_fake_split='real_only',
+        split_into_smaller_segments_mul=2
     )
 
     train_loader = DataLoader(
@@ -203,7 +220,7 @@ if __name__ == '__main__':
         shuffle=True,
         num_workers=8,
         drop_last=True,
-        pin_memory=True,
+        pin_memory=False,
     )
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=LR_0, weight_decay=0.05, betas=(0.9, 0.95))

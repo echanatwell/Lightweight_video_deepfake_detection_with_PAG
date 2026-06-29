@@ -2,7 +2,7 @@
 CombinedVideoDataset — PyTorch Dataset combining Celeb-DF-v2 and FaceForensics++ (FF++).
 """
 
-from typing import List, Tuple, Optional, Callable
+from typing import List, Tuple, Optional, Callable, Literal
 import torch
 from torch import Tensor
 from torch.utils.data import Dataset, ConcatDataset
@@ -55,6 +55,9 @@ class CombinedVideoDataset(Dataset):
         ff_compression: str = "c23",
         ff_methods: Optional[List[str]] = None,
         ff_include_dfd: bool = False,
+        real_fake_split: Literal['all', 'real_only', 'fake_only'] = 'all',
+        split_into_smaller_segments_mul: int = -1,
+        supersample_reals: bool = False
     ) -> None:
         super().__init__()
         self.celebdf_path     = celebdf_path
@@ -63,33 +66,97 @@ class CombinedVideoDataset(Dataset):
         self.frames_per_video = frames_per_video
         self.split            = split
         self.ff_compression   = ff_compression
-        self.ff_methods        = ff_methods
+        self.ff_methods       = ff_methods
         self.ff_include_dfd   = ff_include_dfd
+        self.real_fake_split  = real_fake_split
+        self.split_into_smaller_segments_mul = split_into_smaller_segments_mul
 
         self.datasets: List[Dataset] = []
 
         if celebdf_path is not None:
-            self.celebdf_dataset = CelebDFDataset(
-                dataset_path=celebdf_path,
-                transforms=transforms,
-                frames_per_video=frames_per_video,
-                split=split,
-            )
-            self.datasets.append(self.celebdf_dataset)
+            if supersample_reals and real_fake_split == 'all':
+                print('supersampling is on!')
+                real_celebdf_dataset = CelebDFDataset(
+                    dataset_path=celebdf_path,
+                    transforms=transforms,
+                    frames_per_video=frames_per_video,
+                    split=split,
+                    real_fake_split='real_only',
+                    split_into_smaller_segments_mul=3
+                )
+                fake_celebdf_dataset = CelebDFDataset(
+                    dataset_path=celebdf_path,
+                    transforms=transforms,
+                    frames_per_video=frames_per_video,
+                    split=split,
+                    real_fake_split='fake_only',
+                    split_into_smaller_segments_mul=-1
+                )
+                self.datasets.append(real_celebdf_dataset)
+                self.datasets.append(fake_celebdf_dataset)
+                n_real = len(real_celebdf_dataset)
+                n_fake = len(fake_celebdf_dataset)
+            else:
+                self.celebdf_dataset = CelebDFDataset(
+                    dataset_path=celebdf_path,
+                    transforms=transforms,
+                    frames_per_video=frames_per_video,
+                    split=split,
+                    real_fake_split=real_fake_split,
+                    split_into_smaller_segments_mul=split_into_smaller_segments_mul
+                )
+                self.datasets.append(self.celebdf_dataset)
+                n_real = sum(1 for _, _, lbl in self.celebdf_dataset.entries if lbl == 0)
+                n_fake = sum(1 for _, _, lbl in self.celebdf_dataset.entries if lbl == 1)
+            print(f'CelebDF {split} split initialized with {n_real + n_fake} entries: #fakes={n_fake}, #reals={n_real}')
         else:
             self.celebdf_dataset = None
 
         if ff_path is not None:
-            self.ff_dataset = FaceForensicsDataset(
-                dataset_path=ff_path,
-                transforms=transforms,
-                frames_per_video=frames_per_video,
-                split=split,
-                compression=ff_compression,
-                methods=ff_methods,
-                include_dfd=ff_include_dfd,
-            )
-            self.datasets.append(self.ff_dataset)
+            if supersample_reals and real_fake_split == 'all':
+                print('supersampling is on!')
+                real_ff_dataset = FaceForensicsDataset(
+                    dataset_path=ff_path,
+                    transforms=transforms,
+                    frames_per_video=frames_per_video,
+                    split=split,
+                    compression=ff_compression,
+                    methods=ff_methods,
+                    include_dfd=ff_include_dfd,
+                    real_fake_split='real_only',
+                    split_into_smaller_segments_mul=6
+                )
+                fake_ff_dataset = FaceForensicsDataset(
+                    dataset_path=ff_path,
+                    transforms=transforms,
+                    frames_per_video=frames_per_video,
+                    split=split,
+                    compression=ff_compression,
+                    methods=ff_methods,
+                    include_dfd=ff_include_dfd,
+                    real_fake_split='fake_only',
+                    split_into_smaller_segments_mul=-1
+                )
+                self.datasets.append(real_ff_dataset)
+                self.datasets.append(fake_ff_dataset)
+                n_real = len(real_ff_dataset)
+                n_fake = len(fake_ff_dataset)
+            else:
+                self.ff_dataset = FaceForensicsDataset(
+                    dataset_path=ff_path,
+                    transforms=transforms,
+                    frames_per_video=frames_per_video,
+                    split=split,
+                    compression=ff_compression,
+                    methods=ff_methods,
+                    include_dfd=ff_include_dfd,
+                    real_fake_split=real_fake_split,
+                    split_into_smaller_segments_mul=split_into_smaller_segments_mul
+                )
+                self.datasets.append(self.ff_dataset)
+                n_real = sum(1 for _, _, lbl in self.ff_dataset.entries if lbl == 0)
+                n_fake = sum(1 for _, _, lbl in self.ff_dataset.entries if lbl == 1)
+            print(f'FF++ {split} split initialized with {n_real + n_fake} entries: #fakes={n_fake}, #reals={n_real}')
         else:
             self.ff_dataset = None
 
