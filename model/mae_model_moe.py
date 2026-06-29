@@ -16,9 +16,10 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from .model import Qwen3_5LikeVisualPositionEncoding
+from .model import Qwen3_5LikeVisualPositionEncoding, MRoPEInterleaveLikePositionEncoding, CustomTransformerEncoderLayer
 from transformers.models.qwen3_5.configuration_qwen3_5 import Qwen3_5VisionConfig
 from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5VisionAttention
+from transformers.models.qwen3_next.modeling_qwen3_next import apply_rotary_pos_emb
 
 
 # ---------------------------------------------------------------------------
@@ -418,12 +419,12 @@ class FrequencyAwareMoEMAE(nn.Module):
             spatial_merge_size=1,
             temporal_patch_size=1,
             out_hidden_size=d_model,
-            num_position_embeddings=(img_size // patch_size) ** 2,
+            num_position_embeddings=(img_size // patch_size) ** 2 * max_frames,
             _attn_implementation='sdpa',
         )
 
         self.patch_embedding = nn.Linear(self.PATCH_DIM, d_model)
-        self.positional_encoding = Qwen3_5LikeVisualPositionEncoding(self.vision_config)
+        self.positional_encoding = MRoPEInterleaveLikePositionEncoding(self.vision_config)
 
         self.encoder_layers = nn.ModuleList([
             MoETransformerEncoderLayer(
@@ -445,7 +446,7 @@ class FrequencyAwareMoEMAE(nn.Module):
         self.decoder_pos_embed = nn.Embedding(num_patches, d_dec)
 
         self.decoder_layers = nn.ModuleList([
-            TransformerDecoderLayer(d_dec, decoder_num_heads, d_dec * 4)
+            CustomTransformerEncoderLayer(self.vision_config)
             for _ in range(decoder_depth)
         ])
         self.decoder_norm = nn.LayerNorm(d_dec)
@@ -472,7 +473,7 @@ class FrequencyAwareMoEMAE(nn.Module):
                     nn.init.zeros_(m.bias)
             elif isinstance(m, (nn.LayerNorm, nn.RMSNorm)):
                 nn.init.ones_(m.weight)
-                if m.bias is not None:
+                if hasattr(m, 'bias') and m.bias is not None:
                     nn.init.zeros_(m.bias)
 
     # ------------------------------------------------------------------
@@ -557,7 +558,7 @@ class FrequencyAwareMoEMAE(nn.Module):
         """
         patches, grids = patchify(x, self.patch_size)
         emb = self.patch_embedding(patches)
-        emb, cu_seqlens, position_embeddings = self.positional_encoding(emb, grids)
+        position_embeddings, cu_seqlens = self.positional_encoding(grids)
         hidden_states, _aux = self._run_encoder(emb, cu_seqlens, position_embeddings)
         return hidden_states, grids
 
@@ -570,6 +571,8 @@ class FrequencyAwareMoEMAE(nn.Module):
         encoded_vis: torch.Tensor,
         mask: torch.Tensor,
         ids_restore: torch.Tensor,
+        cu_seqlens: torch.Tensor,
+        position_embeddings: torch.Tensor
     ) -> torch.Tensor:
         """
         Reconstruct all N patches from visible encoded tokens + mask tokens.
@@ -598,7 +601,7 @@ class FrequencyAwareMoEMAE(nn.Module):
         x = x + self.decoder_pos_embed(pos_ids)
 
         for layer in self.decoder_layers:
-            x = layer(x)
+            x = layer(x, cu_seqlens, None, position_embeddings)
         x = self.decoder_norm(x)
 
         return self.pred_head(x)                                        # (B, N, PATCH_DIM)
@@ -650,7 +653,7 @@ class FrequencyAwareMoEMAE(nn.Module):
         x_emb = self.patch_embedding(patches)                           # (B, N, d_model)
 
         # 3. Positional encoding
-        x_emb, cu_seqlens, position_embeddings = self.positional_encoding(x_emb, grids)
+        position_embeddings, cu_seqlens = self.positional_encoding(grids)
 
         # 4. Random masking
         x_vis, mask, ids_restore = self._random_mask(x_emb)            # (B, N_vis, d_model)
@@ -674,7 +677,7 @@ class FrequencyAwareMoEMAE(nn.Module):
         )
 
         # 6. Decode
-        pred = self._decode(x_vis, mask, ids_restore)                   # (B, N, PATCH_DIM)
+        pred = self._decode(x_vis, mask, ids_restore, cu_seqlens, position_embeddings) # (B, N, PATCH_DIM)
 
         # 7. MSE loss on masked patches only
         mse_loss = F.mse_loss(pred[mask], target[mask])
