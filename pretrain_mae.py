@@ -13,6 +13,8 @@ from torchvision.transforms import v2 as T
 
 import numpy as np
 import time
+import logging
+import os
 import matplotlib.pyplot as plt
 
 from datasets.celebdf import CelebDFDataset
@@ -48,6 +50,7 @@ BLUR_SIGMA = 1.0
 EXP_NAME = "MAE_CelebDF_FFPP_FreqAware_rgbtarget"
 CHECKPOINT_PATH = f"{EXP_NAME}_encoder.pth"
 FULL_CHECKPOINT_PATH = f"{EXP_NAME}_full.pth"
+LOG_PATH = os.path.join("logs", f"{EXP_NAME}.log")
 
 
 # Named function instead of lambda to support multiprocessing pickling on Windows
@@ -56,11 +59,51 @@ def normalize_neg1_to_1(x):
     return x * 2 - 1
 
 
+def setup_logger(log_path: str) -> logging.Logger:
+    """Configure and return a logger that writes to both console and a log file."""
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
+
+    logger = logging.getLogger("pretrain_mae")
+    logger.setLevel(logging.DEBUG)
+
+    formatter = logging.Formatter(
+        fmt="%(asctime)s | %(levelname)-8s | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+    # Console handler — INFO and above
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(formatter)
+
+    # File handler — DEBUG and above (captures everything)
+    file_handler = logging.FileHandler(log_path, mode="a", encoding="utf-8")
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(formatter)
+
+    logger.addHandler(console_handler)
+    logger.addHandler(file_handler)
+
+    return logger
+
+
 # ---------------------------------------------------------------------------
 # Entry point — required on Windows (spawn) to prevent recursive worker launch
 # ---------------------------------------------------------------------------
 
 if __name__ == '__main__':
+    logger = setup_logger(LOG_PATH)
+    logger.info("=" * 70)
+    logger.info(f"Starting experiment: {EXP_NAME}")
+    logger.info(
+        f"Hyperparameters: EPOCHS={EPOCHS}, LR_0={LR_0}, LR_N={LR_N}, "
+        f"BATCH_SIZE={BATCH_SIZE}, MASK_RATIO={MASK_RATIO}, "
+        f"ENCODER_DEPTH={ENCODER_DEPTH}, D_MODEL={D_MODEL}, NUM_HEADS={NUM_HEADS}, "
+        f"DECODER_DEPTH={DECODER_DEPTH}, D_DEC={D_DEC}, "
+        f"GRADIENT_ACCUMULATION_STEPS={GRADIENT_ACCUMULATION_STEPS}"
+    )
+    logger.info("=" * 70)
+
     train_loss_history = list()
 
     model = FrequencyAwareMAE(
@@ -84,16 +127,16 @@ if __name__ == '__main__':
         p.numel() for name, p in model.named_parameters()
         if any(k in name for k in ('patch_embedding', 'positional_encoding', 'encoder_layers', 'encoder_norm'))
     )
-    print(f'Total params: {total_params:,}')
-    print(f'Encoder params: {encoder_params:,}')
-    print(f'Decoder params: {total_params - encoder_params:,}')
+    logger.info(f"Total params:   {total_params:,}")
+    logger.info(f"Encoder params: {encoder_params:,}")
+    logger.info(f"Decoder params: {total_params - encoder_params:,}")
 
     # Transforms: same as train.py custom transforms (no MViT-specific normalization)
     # Input is normalized to [-1, 1] as expected by the model
     train_transforms = T.Compose([
         T.Resize((IMG_SIZE, IMG_SIZE), T.InterpolationMode.BICUBIC),
         T.RandomHorizontalFlip(p=0.5),
-        T.RandomApply([T.ColorJitter(brightness=0.15, hue=0.1, saturation=0.15)], p=0.5),
+        # T.RandomApply([T.ColorJitter(brightness=0.15, hue=0.1, saturation=0.15)], p=0.5),
         T.RandomApply([T.JPEG((60, 100))], p=0.3),
         T.ToDtype(torch.float32, scale=True),
         T.Lambda(normalize_neg1_to_1),  # [0,1] -> [-1,1]
@@ -149,7 +192,7 @@ if __name__ == '__main__':
     iterator = iter(train_loader)
     for _ in range(5):
         next(iterator)
-    print(f'[TEST] Fetched 5 batches in {round(time.time() - start, 4)} seconds')
+    logger.info(f"[TEST] Fetched 5 batches in {round(time.time() - start, 4)} seconds")
 
     best_loss = float('inf')
 
@@ -189,21 +232,21 @@ if __name__ == '__main__':
                 optimizer.zero_grad()
 
             if step % 50 == 49:
-                print(
-                    f'step: {step}, '
-                    f'loss smoothed: {round(sum(epoch_loss_history[-100:]) / min(100, step + 1), 6)}, '
-                    f'grad_norm smoothed: {round(sum(epoch_grad_norm_history[-100:]) / min(100, step + 1), 4)}, '
-                    f'lr: {"{:0.2e}".format(lr_scheduler.get_last_lr()[0])}'
+                logger.info(
+                    f"step: {step}, "
+                    f"loss smoothed: {round(sum(epoch_loss_history[-100:]) / min(100, step + 1), 6)}, "
+                    f"grad_norm smoothed: {round(sum(epoch_grad_norm_history[-100:]) / min(100, step + 1), 4)}, "
+                    f"lr: {'{:0.2e}'.format(lr_scheduler.get_last_lr()[0])}"
                 )
 
         avg_loss = train_loss / len(train_loader)
         train_loss_history.append(avg_loss)
 
-        print(
-            f'Epoch {epoch + 1}/{EPOCHS}, '
-            f'epoch time: {round(time.time() - start, 2)}s, '
-            f'train loss: {round(avg_loss, 6)}, '
-            f'lr: {"{:0.2e}".format(lr_scheduler.get_last_lr()[0])}'
+        logger.info(
+            f"Epoch {epoch + 1}/{EPOCHS} | "
+            f"time: {round(time.time() - start, 2)}s | "
+            f"train loss: {round(avg_loss, 6)} | "
+            f"lr: {'{:0.2e}'.format(lr_scheduler.get_last_lr()[0])}"
         )
 
         # Save best encoder checkpoint
@@ -231,16 +274,16 @@ if __name__ == '__main__':
                 },
                 CHECKPOINT_PATH,
             )
-            print(f'  -> Saved best encoder checkpoint (loss={round(best_loss, 6)})')
+            logger.info(f"  -> Saved best encoder checkpoint (loss={round(best_loss, 6)}) to {CHECKPOINT_PATH}")
 
         # Save full model checkpoint every 50 epochs
         if (epoch + 1) % 50 == 0:
             torch.save(model.state_dict(), f'{EXP_NAME}_epoch{epoch + 1}.pth')
-            print(f'  -> Saved full checkpoint at epoch {epoch + 1}')
+            logger.info(f"  -> Saved full checkpoint at epoch {epoch + 1}")
 
     # Save final full model
     torch.save(model.state_dict(), FULL_CHECKPOINT_PATH)
-    print(f'Saved final full model to {FULL_CHECKPOINT_PATH}')
+    logger.info(f"Saved final full model to {FULL_CHECKPOINT_PATH}")
 
     # Plot training curves
     smoothing_ksize = 100
@@ -260,7 +303,7 @@ if __name__ == '__main__':
     axes[2].set_title("Grad Norm / step")
 
     fig.savefig(f'{EXP_NAME}_training_curves.png')
-    print(f'Saved training curves to {EXP_NAME}_training_curves.png')
+    logger.info(f"Saved training curves to {EXP_NAME}_training_curves.png")
 
     # Epoch-level loss curve
     fig2, ax2 = plt.subplots(figsize=(8, 4))
@@ -269,4 +312,5 @@ if __name__ == '__main__':
     ax2.set_ylabel('MSE Loss')
     ax2.set_title('Frequency-Aware MAE Pretraining Loss')
     fig2.savefig(f'{EXP_NAME}_epoch_loss.png')
-    print(f'Saved epoch loss curve to {EXP_NAME}_epoch_loss.png')
+    logger.info(f"Saved epoch loss curve to {EXP_NAME}_epoch_loss.png")
+    logger.info("Training complete.")
