@@ -7,6 +7,7 @@ for use in finetune_mae.py.
 """
 
 import os
+import logging
 import argparse
 import shutil
 import sys
@@ -70,11 +71,13 @@ BLUR_KERNEL = 5
 BLUR_SIGMA = 1.0
 
 
-EXP_NAME = "MAE_CelebDF_FFPP_FreqAware_rgbtarget"
-CHECKPOINT_PATH = f"{EXP_NAME}_encoder.pth"
-FULL_CHECKPOINT_PATH = f"{EXP_NAME}_full.pth"
+OUTPUT_DIR = "pretrain_checkpoints"
+EXP_NAME = "MAE_CelebDF_FFPP_FreqAware"
+CHECKPOINT_PATH = os.path.join(OUTPUT_DIR, EXP_NAME, "encoder.pth")
+FULL_CHECKPOINT_PATH = os.path.join(OUTPUT_DIR, EXP_NAME, "full.pth")
 LOG_PATH = os.path.join("logs", f"{EXP_NAME}.log")
 
+os.makedirs(os.path.join(OUTPUT_DIR, EXP_NAME), exist_ok=True)
 
 # Named function instead of lambda to support multiprocessing pickling on Windows
 def normalize_neg1_to_1(x):
@@ -136,6 +139,7 @@ if __name__ == '__main__':
     IMG_SIZE = args.img_size
     GRADIENT_ACCUMULATION_STEPS = args.gradient_accumulation_steps
     MASK_RATIO = args.mask_ratio
+    
 
     ENCODER_DEPTH = args.encoder_depth
     D_MODEL = args.d_model
@@ -143,6 +147,18 @@ if __name__ == '__main__':
     DECODER_DEPTH = args.decoder_depth
     D_DEC = args.d_decoder
     DECODER_NUM_HEADS = args.num_heads_decoder
+    logger = setup_logger(LOG_PATH)
+    logger.info("=" * 70)
+    logger.info(f"Starting experiment: {EXP_NAME}")
+    logger.info(
+        f"Hyperparameters: EPOCHS={EPOCHS}, LR_0={LR_0}, LR_N={LR_N}, "
+        f"BATCH_SIZE={BATCH_SIZE}, MASK_RATIO={MASK_RATIO}, "
+        f"ENCODER_DEPTH={ENCODER_DEPTH}, D_MODEL={D_MODEL}, NUM_HEADS={NUM_HEADS}, "
+        f"DECODER_DEPTH={DECODER_DEPTH}, D_DEC={D_DEC}, "
+        f"GRADIENT_ACCUMULATION_STEPS={GRADIENT_ACCUMULATION_STEPS}"
+    )
+    logger.info("=" * 70)
+
     logger = setup_logger(LOG_PATH)
     logger.info("=" * 70)
     logger.info(f"Starting experiment: {EXP_NAME}")
@@ -222,6 +238,7 @@ if __name__ == '__main__':
     # Linear warmup (5% of total steps) + cosine decay
     total_steps = len(train_loader) * EPOCHS // GRADIENT_ACCUMULATION_STEPS
     warmup_steps = min(int(total_steps * 0.05), 200)
+
     regular_steps = total_steps - warmup_steps
 
     warmup_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, 0.01, 1.0, total_iters=warmup_steps)
@@ -239,6 +256,7 @@ if __name__ == '__main__':
     iterator = iter(train_loader)
     for _ in range(5):
         next(iterator)
+
     logger.info(f"[TEST] Fetched 5 batches in {round(time.time() - start, 4)} seconds")
 
     best_loss = float('inf')
@@ -279,13 +297,13 @@ if __name__ == '__main__':
                 optimizer.zero_grad()
 
             if step % 50 == 49:
-
                 logger.info(
                     f"step: {step}, "
                     f"loss smoothed: {round(sum(epoch_loss_history[-100:]) / min(100, step + 1), 6)}, "
                     f"grad_norm smoothed: {round(sum(epoch_grad_norm_history[-100:]) / min(100, step + 1), 4)}, "
                     f"lr: {'{:0.2e}'.format(lr_scheduler.get_last_lr()[0])}"
                 )
+
 
         avg_loss = train_loss / len(train_loader)
         train_loss_history.append(avg_loss)
@@ -296,6 +314,7 @@ if __name__ == '__main__':
             f"train loss: {round(avg_loss, 6)} | "
             f"lr: {'{:0.2e}'.format(lr_scheduler.get_last_lr()[0])}"
         )
+
 
         # Save best encoder checkpoint
         if avg_loss < best_loss:
@@ -328,11 +347,12 @@ if __name__ == '__main__':
         if (epoch + 1) % 50 == 0:
 
             torch.save(model.state_dict(), os.path.join(OUTPUT_DIR, EXP_NAME, f'epoch{epoch + 1}.pth'))
+            # print(f'  -> Saved full checkpoint at epoch {epoch + 1}')
             logger.info(f"  -> Saved full checkpoint at epoch {epoch + 1}")
-
 
     # Save final full model
     torch.save(model.state_dict(), FULL_CHECKPOINT_PATH)
+    # print(f'Saved final full model to {FULL_CHECKPOINT_PATH}')
     logger.info(f"Saved final full model to {FULL_CHECKPOINT_PATH}")
 
     # Plot training curves
@@ -353,7 +373,8 @@ if __name__ == '__main__':
     axes[2].set_title("Grad Norm / step")
 
     fig.savefig(os.path.join(OUTPUT_DIR, EXP_NAME, 'training_curves.png'))
-    print(f'Saved training curves to training_curves.png')
+    # print(f'Saved training curves to training_curves.png')
+    logger.info(f"Saved training curves to {EXP_NAME}_training_curves.png")
 
     # Epoch-level loss curve
     fig2, ax2 = plt.subplots(figsize=(8, 4))
@@ -362,4 +383,7 @@ if __name__ == '__main__':
     ax2.set_ylabel('MSE Loss')
     ax2.set_title('Frequency-Aware MAE Pretraining Loss')
     fig2.savefig(os.path.join(OUTPUT_DIR, EXP_NAME, 'epoch_loss.png'))
-    print(f'Saved epoch loss curve to epoch_loss.png')
+    # print(f'Saved epoch loss curve to epoch_loss.png')
+    logger.info(f"Saved epoch loss curve to {EXP_NAME}_epoch_loss.png")
+    logger.info("Training complete.")
+
