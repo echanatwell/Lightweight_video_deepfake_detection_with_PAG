@@ -17,8 +17,9 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from .model import CustomTransformerEncoderLayer, Qwen3_5LikeVisualPositionEncoding
+from .model import CustomTransformerEncoderLayer, Qwen3_5LikeVisualPositionEncoding, MRoPEInterleaveLikePositionEncoding
 from transformers.models.qwen3_5.configuration_qwen3_5 import Qwen3_5VisionConfig
+from transformers.models.qwen3_next.modeling_qwen3_next import apply_rotary_pos_emb
 
 
 # ---------------------------------------------------------------------------
@@ -94,36 +95,6 @@ def patchify(x: torch.Tensor, patch_size: int = 16) -> tuple[torch.Tensor, torch
 
 
 # ---------------------------------------------------------------------------
-# Simple transformer decoder layer (standard pre-norm)
-# ---------------------------------------------------------------------------
-
-class TransformerDecoderLayer(nn.Module):
-    """Lightweight pre-norm transformer layer (self-attention only, no cross-attention)."""
-
-    def __init__(self, d_model: int, num_heads: int, ffn_dim: int, dropout: float = 0.0):
-        super().__init__()
-        self.norm1 = nn.LayerNorm(d_model)
-        self.norm2 = nn.LayerNorm(d_model)
-        self.attn = nn.MultiheadAttention(d_model, num_heads, dropout=dropout, batch_first=True)
-        self.ffn = nn.Sequential(
-            nn.Linear(d_model, ffn_dim),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(ffn_dim, d_model),
-        )
-        self.drop = nn.Dropout(dropout)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # self-attention
-        h = self.norm1(x)
-        h, _ = self.attn(h, h, h, need_weights=False)
-        x = x + self.drop(h)
-        # FFN
-        x = x + self.drop(self.ffn(self.norm2(x)))
-        return x
-
-
-# ---------------------------------------------------------------------------
 # FrequencyAwareMAE
 # ---------------------------------------------------------------------------
 
@@ -190,12 +161,12 @@ class FrequencyAwareMAE(nn.Module):
             spatial_merge_size=1,
             temporal_patch_size=1,
             out_hidden_size=d_model,
-            num_position_embeddings=(img_size // patch_size) ** 2,
+            num_position_embeddings=(img_size // patch_size) ** 2 * max_frames,
             _attn_implementation='sdpa',
         )
 
         self.patch_embedding = nn.Linear(self.PATCH_DIM, d_model)
-        self.positional_encoding = Qwen3_5LikeVisualPositionEncoding(self.vision_config)
+        self.positional_encoding = MRoPEInterleaveLikePositionEncoding(self.vision_config)
         self.encoder_layers = nn.ModuleList([
             CustomTransformerEncoderLayer(self.vision_config)
             for _ in range(encoder_depth)
@@ -204,17 +175,16 @@ class FrequencyAwareMAE(nn.Module):
 
         # ---- Decoder ----
         # Project encoder output to decoder dimension
-        self.decoder_proj = nn.Linear(d_model, d_dec)
+        if d_model != d_dec:
+            self.decoder_proj = nn.Linear(d_model, d_dec)
+        else:
+            self.decoder_proj = None
         # Learnable mask token (replaces masked positions in decoder input)
         self.mask_token = nn.Parameter(torch.zeros(1, 1, d_dec))
         nn.init.normal_(self.mask_token, std=0.02)
 
-        # Decoder positional embedding (simple learned, for all N positions)
-        num_patches = max_frames * (img_size // patch_size) ** 2
-        self.decoder_pos_embed = nn.Embedding(num_patches, d_dec)
-
         self.decoder_layers = nn.ModuleList([
-            TransformerDecoderLayer(d_dec, decoder_num_heads, d_dec * 4)
+            CustomTransformerEncoderLayer(self.vision_config)
             for _ in range(decoder_depth)
         ])
         self.decoder_norm = nn.LayerNorm(d_dec)
@@ -300,7 +270,7 @@ class FrequencyAwareMAE(nn.Module):
         x = self.patch_embedding(patches)  # (B, N, d_model)
 
         # Add positional encoding and get cu_seqlens / position_embeddings
-        x, cu_seqlens, position_embeddings = self.positional_encoding(x, grids)
+        position_embeddings, cu_seqlens = self.positional_encoding(grids)
 
         if mask is not None:
             # Keep only visible tokens
@@ -357,6 +327,8 @@ class FrequencyAwareMAE(nn.Module):
         encoded_vis: torch.Tensor,
         mask: torch.Tensor,
         ids_restore: torch.Tensor,
+        cu_seqlens: torch.Tensor,
+        position_embeddings: torch.Tensor
     ) -> torch.Tensor:
         """
         Reconstruct all N patches from visible encoded tokens + mask tokens.
@@ -388,13 +360,9 @@ class FrequencyAwareMAE(nn.Module):
         # Restore original order using ids_restore
         x = torch.gather(x, 1, ids_restore.unsqueeze(-1).expand(-1, -1, self.d_dec))
 
-        # Add decoder positional embeddings
-        pos_ids = torch.arange(N, device=x.device).unsqueeze(0).expand(B, -1)
-        x = x + self.decoder_pos_embed(pos_ids)
-
         # Decoder transformer layers
         for layer in self.decoder_layers:
-            x = layer(x)
+            x = layer(x, cu_seqlens, None, position_embeddings)
         x = self.decoder_norm(x)
 
         # Predict patch values
@@ -453,7 +421,8 @@ class FrequencyAwareMAE(nn.Module):
         x_emb = self.patch_embedding(patches)  # (B, N, d_model)
 
         # 4. Add positional encoding
-        x_emb, cu_seqlens, position_embeddings = self.positional_encoding(x_emb, grids)
+        # x_emb, cu_seqlens, position_embeddings = self.positional_encoding(x_emb, grids)
+        position_embeddings, cu_seqlens = self.positional_encoding(grids)
 
         # 5. Random masking
         x_vis, mask, ids_restore = self._random_mask(x_emb)  # (B, N_vis, d_model)
@@ -479,7 +448,7 @@ class FrequencyAwareMAE(nn.Module):
         x_vis = self.encoder_norm(x_vis)
 
         # 7. Decode
-        pred = self._decode(x_vis, mask, ids_restore)  # (B, N, PATCH_DIM)
+        pred = self._decode(x_vis, mask, ids_restore, cu_seqlens, position_embeddings)  # (B, N, PATCH_DIM)
 
         # 8. MSE loss on masked patches only
         loss = F.mse_loss(pred[mask], target[mask])

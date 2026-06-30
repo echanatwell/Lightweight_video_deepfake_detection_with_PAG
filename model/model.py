@@ -100,7 +100,128 @@ class CustomTransformerEncoderLayer(nn.Module):
         hidden_states = residual + hidden_states
 
         return hidden_states
-    
+
+
+class MRoPEInterleaveLikePositionEncoding(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+
+        self.config = config
+        
+        self.theta = 10000
+        self.mrope_section = [12, 10, 10]
+        self.rope_dim = config.hidden_size // config.num_heads
+
+        inv_freq = 1.0 / (self.theta ** (torch.arange(0, self.rope_dim, 2) / self.rope_dim))
+        self.register_buffer("inv_freq", inv_freq, persistent=False)
+
+    def build_mrope_position_ids(
+        self,
+        grid_thw,            # (T, H, W) OR (B, 3)
+        attention_mask=None, # (N,) optional
+    ):
+        """
+        returns: (3, N)
+        """
+
+        if grid_thw.dim() == 1:
+            grid_thw = grid_thw.unsqueeze(0)
+
+        device = grid_thw.device
+
+        all_t, all_h, all_w = [], [], []
+
+        offset = 0
+
+        for b in range(grid_thw.shape[0]):
+            t, h, w = grid_thw[b].tolist()
+            h //= self.config.spatial_merge_size
+            w //= self.config.spatial_merge_size
+
+            N = t * h * w
+
+            t_idx = torch.arange(t, device=device).repeat_interleave(h * w)
+            h_idx = torch.arange(h, device=device).repeat(t).repeat_interleave(w)
+            w_idx = torch.arange(w, device=device).repeat(t * h)
+
+            all_t.append(t_idx)
+            all_h.append(h_idx)
+            all_w.append(w_idx)
+
+            offset += N
+
+        t = torch.cat(all_t)
+        h = torch.cat(all_h)
+        w = torch.cat(all_w)
+
+        pos = torch.stack([t, h, w], dim=0)  # (3, N)
+
+        # optional masking (IMPORTANT)
+        if attention_mask is not None:
+            pos = pos[:, attention_mask.bool()]
+
+        return pos
+
+
+    def build_cu_seqlens(self, grid_thw):
+        lens = []
+
+        for t, h, w in grid_thw.tolist():
+            h //= self.config.spatial_merge_size
+            w //= self.config.spatial_merge_size
+            lens.append(t * h * w)
+
+        cu = torch.tensor([0] + lens, dtype=torch.long).cumsum(0)
+        return cu
+
+
+    def apply_mrope_rope(self, inv_freq, position_ids):
+        """
+        position_ids: (3, N)
+        returns freqs: (3, N, D/2)
+        """
+
+        pos = position_ids[:, :, None].float()   # (3, N, 1)
+        inv = inv_freq[None, None, :]      # (1, 1, D/2, 1)
+
+        freqs = (pos * inv)      # (3, N, D/2)
+
+        return freqs
+
+
+    def mrope_interleave(self, freqs):
+        """
+        freqs: (3, N, D/2)
+        """
+
+        f = freqs[0].clone()  # T base
+
+        for dim, offset in enumerate((1, 2), start=1):
+            length = self.mrope_section[dim] * 3
+            idx = slice(offset, length, 3)
+            f[..., idx] = freqs[dim, ..., idx]
+
+        return f
+
+
+    def get_cos_sin(self, freqs, scale=1.0):
+        emb = torch.cat([freqs, freqs], dim=-1)
+
+        cos = emb.cos() * scale
+        sin = emb.sin() * scale
+
+        return cos, sin
+
+
+    def forward(self, grid_thw, mask=None):
+        position_ids = self.build_mrope_position_ids(grid_thw, mask)
+        cu_seqlens = self.build_cu_seqlens(grid_thw)
+        freqs = self.apply_mrope_rope(self.inv_freq, position_ids)
+        freqs = self.mrope_interleave(freqs)
+        cos, sin = self.get_cos_sin(freqs)
+
+        return (cos, sin), cu_seqlens
+
 
 class Qwen3_5LikeVisualPositionEncoding(nn.Module):
     def __init__(self, config):

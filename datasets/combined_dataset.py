@@ -75,7 +75,6 @@ class CombinedVideoDataset(Dataset):
 
         if celebdf_path is not None:
             if supersample_reals and real_fake_split == 'all':
-                print('supersampling is on!')
                 real_celebdf_dataset = CelebDFDataset(
                     dataset_path=celebdf_path,
                     transforms=transforms,

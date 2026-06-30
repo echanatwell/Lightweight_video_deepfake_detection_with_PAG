@@ -58,6 +58,8 @@ def normalize_neg1_to_1(x):
 if __name__ == '__main__':
     args = parse_args()
 
+    print(args)
+
     DEVICE = 'cuda:0'
     EPOCHS = args.epochs
     LR_0 = args.lr0
@@ -292,7 +294,8 @@ if __name__ == '__main__':
 
         if val_f1_history[-1] > best_f1:
             best_f1 = val_f1_history[-1]
-            torch.save(model.state_dict(), os.path.join(OUTPUT_DIR, EXP_NAME, "classifier.pth"))
+            torch.save(model.state_dict(), os.path.join(OUTPUT_DIR, EXP_NAME, "best.pth"))
+        torch.save(model.state_dict(), os.path.join(OUTPUT_DIR, EXP_NAME, "last.pth"))
 
     # ---- Plots ----
     smoothing_ksize = 100

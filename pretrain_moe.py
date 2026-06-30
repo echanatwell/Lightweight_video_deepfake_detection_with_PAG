@@ -222,6 +222,8 @@ if __name__ == '__main__':
         aux_loss_alpha=AUX_LOSS_ALPHA,
     ).to(DEVICE)
 
+    summary(model, input_size=(BATCH_SIZE, 3, FRAMES_PER_VIDEO, IMG_SIZE, IMG_SIZE))
+
     total_params = sum(p.numel() for p in model.parameters())
     encoder_params = sum(
         p.numel() for name, p in model.named_parameters()
@@ -242,8 +244,8 @@ if __name__ == '__main__':
     ])
 
     # ── Dataset ──────────────────────────────────────────────────────────────
-    celebdf_path = '../datasets/Celeb-DF-v2'
-    ffpp_path = '../datasets/ffpp'
+    celebdf_path = '../../datasets/Celeb-DF-v2'
+    ffpp_path = '../../datasets/ffpp'
 
     train_dataset = CombinedVideoDataset(
         celebdf_path=celebdf_path,
