@@ -319,34 +319,6 @@ class MoETransformerEncoderLayer(nn.Module):
 
 
 # ---------------------------------------------------------------------------
-# Decoder layer (dense — decoder stays simple)
-# ---------------------------------------------------------------------------
-
-class TransformerDecoderLayer(nn.Module):
-    """Lightweight pre-norm transformer layer (self-attention only, no cross-attention)."""
-
-    def __init__(self, d_model: int, num_heads: int, ffn_dim: int, dropout: float = 0.0):
-        super().__init__()
-        self.norm1 = nn.LayerNorm(d_model)
-        self.norm2 = nn.LayerNorm(d_model)
-        self.attn = nn.MultiheadAttention(d_model, num_heads, dropout=dropout, batch_first=True)
-        self.ffn = nn.Sequential(
-            nn.Linear(d_model, ffn_dim),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(ffn_dim, d_model),
-        )
-        self.drop = nn.Dropout(dropout)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        h = self.norm1(x)
-        h, _ = self.attn(h, h, h, need_weights=False)
-        x = x + self.drop(h)
-        x = x + self.drop(self.ffn(self.norm2(x)))
-        return x
-
-
-# ---------------------------------------------------------------------------
 # FrequencyAwareMoEMAE
 # ---------------------------------------------------------------------------
 
@@ -759,7 +731,7 @@ class MoEMAEClassifier(nn.Module):
         """
         patches, grids = patchify(x, patch_size=16)                     # (B, N, 768)
         hidden = self.patch_embedding(patches)                          # (B, N, d_model)
-        hidden, cu_seqlens, position_embeddings = self.positional_encoding(hidden, grids)
+        position_embeddings, cu_seqlens = self.positional_encoding(grids)
 
         for layer in self.encoder_layers:
             hidden, _aux = layer(hidden, cu_seqlens, None, position_embeddings)

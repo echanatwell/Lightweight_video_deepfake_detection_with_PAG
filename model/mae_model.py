@@ -529,8 +529,7 @@ class MAEClassifier(nn.Module):
 
         patches, grids = patchify(x, patch_size=16)  # (B, N, 768)
         hidden = self.patch_embedding(patches)         # (B, N, d_model)
-
-        hidden, cu_seqlens, position_embeddings = self.positional_encoding(hidden, grids)
+        position_embeddings, cu_seqlens = self.positional_encoding(grids)
 
         for layer in self.encoder_layers:
             hidden = layer(hidden, cu_seqlens, None, position_embeddings)

@@ -9,6 +9,7 @@ Usage:
     python finetune_mae.py --checkpoint MAE_CelebDF_FreqAware_encoder.pth
 """
 import os
+import sys
 import shutil
 import argparse
 import shutil
@@ -76,9 +77,10 @@ if __name__ == '__main__':
     CHECKPOINT_PATH = os.path.join(OUTPUT_DIR, EXP_NAME, "encoder.pth")
     FULL_CHECKPOINT_PATH = os.path.join(OUTPUT_DIR, EXP_NAME, "full.pth")
 
-    if os.path.exists(os.path.join(OUTPUT_DIR, EXP_NAME)):
-        shutil.rmtree(os.path.join(OUTPUT_DIR, EXP_NAME))
-    os.mkdir(os.path.join(OUTPUT_DIR, EXP_NAME))
+    if os.path.exists(os.path.join(OUTPUT_DIR, EXP_NAME)) and len(os.listdir(os.path.join(OUTPUT_DIR, EXP_NAME))):
+        print(f'WARNING! {os.path.join(OUTPUT_DIR, EXP_NAME)} already exists, stopping')
+        sys.exit(1)
+    os.makedirs(os.path.join(OUTPUT_DIR, EXP_NAME), exist_ok=True)
 
     train_loss_history = list()
     val_loss_history = list()
@@ -144,53 +146,12 @@ if __name__ == '__main__':
         split_into_smaller_segments_mul=-1
     )
 
-    # train_loader = DataLoader(
-    #     train_dataset,
-    #     BATCH_SIZE,
-    #     shuffle=True,
-    #     num_workers=4,
-    #     drop_last=True,
-    #     pin_memory=True,
-    # )
-
-    # weights inversely proportional to the class frequency
-    n_real = sum(1 for _, lbl in train_dataset.celebdf_dataset.entries if lbl == 0) + \
-        sum(1 for _, lbl in train_dataset.ff_dataset.entries if lbl == 0)
-    n_fake = sum(1 for _, lbl in train_dataset.celebdf_dataset.entries if lbl == 1) + \
-        sum(1 for _, lbl in train_dataset.ff_dataset.entries if lbl == 1)
-    n_total = n_real + n_fake
-
-    class_weights = torch.tensor([n_total / (2 * n_real), n_total / (2 * n_fake)], device=DEVICE) # sklearn compute_class_weight
-    sample_weights = [1. / n_real, 1. / n_fake]
-    sampler = WeightedRandomSampler(sample_weights, num_samples=len(sample_weights), replacement=True)
-
-
-    train_loader = DataLoader(train_dataset, BATCH_SIZE, sampler=sampler, shuffle=False, num_workers=8, drop_last=True, pin_memory=True) # shuffle=False due to sampler
-    val_loader = DataLoader(val_dataset, BATCH_SIZE, sampler=sampler, shuffle=False, num_workers=4, drop_last=True, pin_memory=True)
+    train_loader = DataLoader(train_dataset, BATCH_SIZE, shuffle=True, num_workers=8, drop_last=True, pin_memory=False)
+    val_loader = DataLoader(val_dataset, BATCH_SIZE, shuffle=False, num_workers=4, drop_last=True, pin_memory=False)
     test_loader = DataLoader(test_dataset, BATCH_SIZE, shuffle=False, num_workers=4, drop_last=True)
 
-
-    # weights inversely proportional to the class frequency
-    n_real = sum(1 for _, lbl in train_dataset.celebdf_dataset.entries if lbl == 0) + \
-        sum(1 for _, lbl in train_dataset.ff_dataset.entries if lbl == 0)
-    n_fake = sum(1 for _, lbl in train_dataset.celebdf_dataset.entries if lbl == 1) + \
-        sum(1 for _, lbl in train_dataset.ff_dataset.entries if lbl == 1)
-    n_total = n_real + n_fake
-
-    class_weights = torch.tensor([n_total / (2 * n_real), n_total / (2 * n_fake)], device=DEVICE) # sklearn compute_class_weight
-    sample_weights = [1. / n_real, 1. / n_fake]
-    sampler = WeightedRandomSampler(sample_weights, num_samples=len(sample_weights), replacement=True)
-
-
-    train_loader = DataLoader(train_dataset, BATCH_SIZE, sampler=sampler, shuffle=False, num_workers=2, drop_last=True, pin_memory=True) # shuffle=False due to sampler
-    val_loader = DataLoader(val_dataset, BATCH_SIZE, sampler=sampler, shuffle=False, num_workers=2, drop_last=True, pin_memory=True)
-    test_loader = DataLoader(test_dataset, BATCH_SIZE, shuffle=False, num_workers=2, drop_last=True)
-
     # ---- Optimizer & scheduler (identical to Exp 4 / train_mvit.py) ----
-    criterion = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=0.05)
-    # criterion = nn.CrossEntropyLoss(label_smoothing=0.05)
-
-
+    criterion = nn.CrossEntropyLoss(label_smoothing=0.05)
     f1_score_fn = F1Score(task="multiclass", num_classes=NUM_CLASSES).to(DEVICE)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=LR_0, weight_decay=0.05)

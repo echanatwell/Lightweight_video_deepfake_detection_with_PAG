@@ -157,31 +157,12 @@ if __name__ == '__main__':
         split_into_smaller_segments_mul=-1,
     )
 
-    # Weighted sampler to handle class imbalance
-    n_real = (
-        sum(1 for _, lbl in train_dataset.celebdf_dataset.entries if lbl == 0)
-        + sum(1 for _, lbl in train_dataset.ff_dataset.entries if lbl == 0)
-    )
-    n_fake = (
-        sum(1 for _, lbl in train_dataset.celebdf_dataset.entries if lbl == 1)
-        + sum(1 for _, lbl in train_dataset.ff_dataset.entries if lbl == 1)
-    )
-    n_total = n_real + n_fake
-
-    class_weights = torch.tensor(
-        [n_total / (2 * n_real), n_total / (2 * n_fake)], device=DEVICE
-    )
-    sample_weights = [1.0 / n_real, 1.0 / n_fake]
-    sampler = WeightedRandomSampler(
-        sample_weights, num_samples=len(sample_weights), replacement=True
-    )
-
     train_loader = DataLoader(
-        train_dataset, BATCH_SIZE, sampler=sampler, shuffle=False,
+        train_dataset, BATCH_SIZE, shuffle=True,
         num_workers=8, drop_last=True, pin_memory=True,
     )
     val_loader = DataLoader(
-        val_dataset, BATCH_SIZE, sampler=sampler, shuffle=False,
+        val_dataset, BATCH_SIZE, shuffle=False,
         num_workers=4, drop_last=True, pin_memory=True,
     )
     test_loader = DataLoader(
@@ -214,7 +195,7 @@ if __name__ == '__main__':
     )
 
     # ── Loss & metrics ────────────────────────────────────────────────────────
-    criterion = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=0.05)
+    criterion = nn.CrossEntropyLoss(label_smoothing=0.05)
     f1_score_fn = F1Score(task="multiclass", num_classes=NUM_CLASSES).to(DEVICE)
 
     # ── Dataloader warmup ─────────────────────────────────────────────────────

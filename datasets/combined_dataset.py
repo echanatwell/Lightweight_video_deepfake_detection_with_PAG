@@ -113,7 +113,6 @@ class CombinedVideoDataset(Dataset):
 
         if ff_path is not None:
             if supersample_reals and real_fake_split == 'all':
-                print('supersampling is on!')
                 real_ff_dataset = FaceForensicsDataset(
                     dataset_path=ff_path,
                     transforms=transforms,
