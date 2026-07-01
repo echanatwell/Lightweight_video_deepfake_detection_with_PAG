@@ -1,3 +1,150 @@
+# Inference Guide
+
+## Requirements
+
+Python 3.10+ is required. Install dependencies:
+
+```bash
+pip install -r linux_requirements.txt
+```
+
+Key packages used at inference time:
+
+| Package | Purpose |
+|---|---|
+| `torch`, `torchvision` | Model and transforms |
+| `transformers` | Qwen3.5 vision encoder blocks |
+| `av` (PyAV) | Video decoding |
+| `opencv-python` | Frame reading (test.ipynb path) |
+| `scikit-learn` | `classification_report` |
+| `torchmetrics` | F1 score |
+
+---
+
+## Checkpoints
+
+| File | Description |
+|---|---|
+| `checkpoints/encoder.pth` | MAE pretraining checkpoint — required only for `test_mae.py` |
+| `checkpoints/last.pth` | MAEClassifier fine-tuned weights — used by `infer.py` |
+
+`encoder.pth` format (produced by `pretrain_mae.py`):
+```python
+{
+    'encoder_state_dict': {...},
+    'hparams': {
+        'encoder_depth': int,
+        'd_model': int,
+        'num_heads': int,
+        'patch_size': int,
+        'max_frames': int,
+        'img_size': int,
+    },
+    'epoch': int,
+    'loss': float,
+}
+```
+
+`last.pth` format: plain `state_dict` saved via `torch.save(model.state_dict(), ...)`.
+
+---
+
+## Dataset Format
+
+Both scripts expect videos organised into two subdirectories:
+
+```
+dataset_path/
+├── real/
+│   ├── video_001.mp4
+│   ├── video_002.mp4
+│   └── ...
+└── fake/
+    ├── video_101.mp4
+    ├── video_102.mp4
+    └── ...
+```
+
+- Any video format supported by PyAV (`.mp4`, `.avi`, `.mkv`, …) is accepted.
+- Labels are derived from the directory name: `real/ → 0`, `fake/ → 1`.
+- `test_mae.py` additionally requires a CSV file with columns `obj_id` (video filename without extension) and `label`.
+
+---
+
+## Video-level metrics — `infer.py`
+
+Each video is split into non-overlapping segments of `--frames_per_segment` frames.
+The model predicts a class for every segment; the **final video-level prediction is the majority vote** across all segment predictions.
+
+```bash
+python infer.py \
+    --dataset_path /path/to/dataset \
+    --classifier_ckpt checkpoints/last.pth \
+    --device cuda
+```
+
+All options:
+
+| Argument | Default | Description |
+|---|---|---|
+| `--dataset_path` | *(required)* | Root dir with `real/` and `fake/` subdirs |
+| `--classifier_ckpt` | `checkpoints/last.pth` | MAEClassifier weights |
+| `--frames_per_segment` | `16` | Frames per segment fed to the model |
+| `--batch_size` | `8` | DataLoader batch size |
+| `--num_workers` | `4` | DataLoader worker processes |
+| `--device` | auto | `cuda` / `cpu` |
+| `--log_file` | `classification_report.log` | Output log file |
+| `--encoder_depth` | `6` | Must match checkpoint architecture |
+| `--d_model` | `256` | Must match checkpoint architecture |
+| `--num_heads` | `8` | Must match checkpoint architecture |
+| `--patch_size` | `16` | Must match checkpoint architecture |
+| `--max_frames` | `16` | Must match checkpoint architecture |
+| `--img_size` | `224` | Input spatial resolution |
+
+The script logs to both stdout and `--log_file`.
+
+---
+
+## Segment-level metrics — `test_mae.py`
+
+Metrics are computed per segment (not aggregated to video level).
+Requires both the MAE pretraining checkpoint and the classifier checkpoint.
+
+```bash
+python test_mae.py \
+    checkpoints/encoder.pth \
+    checkpoints/last.pth \
+    --frames-per-video 16 \
+    --img-size 224 \
+    --batch-size 8
+```
+
+Positional arguments:
+
+| Argument | Description |
+|---|---|
+| `pretrained_encoder_checkpoint` | Path to `encoder.pth` |
+| `classifier_checkpoint` | Path to `last.pth` |
+
+Optional arguments:
+
+| Argument | Default | Description |
+|---|---|---|
+| `--frames-per-video` | `16` | Frames per segment |
+| `--img-size` | `224` | Input spatial resolution |
+| `--batch-size` | `8` | DataLoader batch size |
+
+> **Note:** `labels_path` and `videos_path` are currently hardcoded at the bottom of `test_mae.py`. Edit lines 184–185 before running:
+> ```python
+> labels_path = "/path/to/labels.csv"   # columns: obj_id, label
+> videos_path = "/path/to/videos"       # directory with *.mp4 files
+> ```
+
+
+------------------------------------
+
+# Research
+
 # Идея
 
 1. Взять сильную, но легкую архитектуру (сейчас - легкий энкодер на ооснове блоков Qwen3.5)
